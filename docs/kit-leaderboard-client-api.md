@@ -4,8 +4,9 @@
 **Part of:** coinless-kit
 **Depends on:** nothing (no other kit module, no third-party library)
 **Talks to:** `scores.coinlessgames.com` (see the Worker spec)
+**Scope:** scores only. Achievements are a separate future module.
 
-> This is the first coinless-kit module doc, so it doubles as the template for the other six.
+> This is the first coinless-kit module doc, so it doubles as the template for the others.
 > The contract below is what a game reads. A game should never need to read this module's source.
 
 ---
@@ -31,10 +32,10 @@ const board = KitLeaderboard.create({
   getPlayer: () => ({ playerId: '3f2a9e5c-...', displayName: 'GHOST' }),
 
   // Optional.
-  storageKey:      'coinless.lb.orbital-overhaul.v1',  // default derived from gameId
-  timeoutMs:       8000,
-  turnstileToken:  null,     // or () => token, when Turnstile is enabled
-  onEvent:         (name, detail) => {}
+  storageKey:     'coinless.lb.orbital-overhaul.v1',  // default derived from gameId
+  timeoutMs:      8000,
+  turnstileToken: null,     // or () => token, when Turnstile is enabled
+  onEvent:        (name, detail) => {}
 });
 ```
 
@@ -44,25 +45,26 @@ const board = KitLeaderboard.create({
 
 ## Methods
 
-### `board.beginRun() → runId`
+### `board.beginRun() -> runId`
 
 Call at the **start** of a run, not the end. Returns a UUID and stores it internally as the current run. This is the idempotency key: every retry of this run reuses it, so a duplicate submit can never produce a duplicate board entry.
 
 Calling `beginRun()` again discards the previous unsubmitted run ID.
 
-### `board.submit(result) → Promise<SubmitResult>`
+### `board.submit(result) -> Promise<SubmitResult>`
 
 ```js
 const outcome = await board.submit({
-  metric:          42000,
-  durationS:       612,
-  outcome:         'died',            // 'died' | 'completed' | 'quit'
-  stats:           { wave_reached: 14, canisters_delivered: 96, /* ... */ },
-  newAchievements: ['dock_king']      // unlocked THIS RUN only — never a lifetime list
+  metric:    42000,
+  durationS: 612,
+  outcome:   'died',            // 'died' | 'completed' | 'quit'
+  stats:     { wave_reached: 14, canisters_delivered: 96, /* ... */ }
 });
 ```
 
 `runId`, `playerId`, `displayName`, `gameId`, and `gameVersion` are filled in by the module.
+
+**`stats` is display data only.** Nothing on the server validates or computes from it — its job is to make a board row interesting next to the score. Send whatever the game finds worth showing; the keys should match the game's `statsFields` in the Worker registry, but a mismatch only sets a flag, never a rejection.
 
 **Never rejects on network failure.** Resolves with one of:
 
@@ -79,24 +81,24 @@ const outcome = await board.submit({
 
 The game should treat `queued` as success from the player's perspective: the local high score table is authoritative locally, and the network board is additive. Show something like "score saved — will post when you're back online," never an error.
 
-### `board.fetchBoard({ window, limit }) → Promise<Board>`
+### `board.fetchBoard({ window, limit }) -> Promise<Board>`
 
 ```js
 const b = await board.fetchBoard({ window: '24h', limit: 25 });
 // { gameId, window, metricLabel, generatedAt, entries: [...] }
 ```
 
-`window` ∈ `4h | 8h | 12h | 24h | 7d | 30d | year | all` (default `all`). `limit` default 25, max 100.
+`window` in `4h | 8h | 12h | 24h | 7d | 30d | year | all` (default `all`). `limit` default 25, max 100.
 
 Entries are **top players**, not top runs: one row per player, their best run in the window, with `stats` / `outcome` / `durationS` from that same run.
 
 Rejects on network failure — reading a board is a foreground action with a visible retry, unlike submitting.
 
-### `board.queueLength() → number`
+### `board.queueLength() -> number`
 
 Pending submits. Useful for a small "1 score waiting to post" indicator on the title screen.
 
-### `board.flushQueue() → Promise<{ sent, failed, dropped }>`
+### `board.flushQueue() -> Promise<{ sent, failed, dropped }>`
 
 Attempt all queued submits now. Called automatically (see below); expose a manual trigger only if you want a retry button.
 
@@ -110,7 +112,7 @@ Attempt all queued submits now. Called automatically (see below); expose a manua
 - The queue is flushed on `create()`, on `window` `online` events, and after any successful submit.
 - Retry uses exponential backoff (2s, 8s, 30s, then once per session) so a down endpoint doesn't produce a request storm.
 - Cap: 20 entries. When full, the **lowest-metric** entry is dropped, not the oldest — the point is to preserve the runs a player would care about.
-- Entries older than 30 days are dropped on load. A late arrival is still ranked by its *server* receipt time, so a score sitting in the queue for a week will land in the 24h window on the day it finally posts. Accept this; the alternative is trusting client timestamps.
+- Entries older than 30 days are dropped on load. A late arrival is ranked by its *server* receipt time, so a score sitting in the queue for a week lands in the 24h window on the day it finally posts. Accept this; the alternative is trusting client timestamps.
 - `localStorage` unavailable (private browsing, embedded iframes with storage blocked): the module degrades to no queue and reports `status: 'queued', reason: 'offline'` truthfully but forgets. It must not throw.
 
 ---
@@ -119,10 +121,10 @@ Attempt all queued submits now. Called automatically (see below); expose a manua
 
 ```js
 KitLeaderboard.validateName('Gh0st!')
-// → { ok: false, reason: 'illegal_character', normalized: null }
+// -> { ok: false, reason: 'illegal_character', normalized: null }
 
 KitLeaderboard.validateName('  ghost ')
-// → { ok: true, reason: null, normalized: 'GHOST' }
+// -> { ok: true, reason: null, normalized: 'GHOST' }
 ```
 
 Rules mirror the server: 1–12 chars after normalization, `A-Z 0-9 space - _`, uppercased, internal whitespace collapsed, no Unicode. The client check is **UX only** — the server is authoritative and may still return `NAME_REJECTED` for profanity, which the client filter deliberately does not duplicate (keeping the wordlist out of shipped game source is the point).
@@ -139,7 +141,7 @@ KitLeaderboard.NAME_CHANGE_NOTICE
 
 Show this in the rename flow, before confirmation, with the option to cancel.
 
-This notice is a *leaderboard* fact but a *profile UI* concern — which makes it the first real test of where the seams between kit modules fall. In v1 it lives here as a constant the game renders. When `kit-menu` / profile management is extracted, that module should import the constant rather than re-type the sentence.
+This notice is a *leaderboard* fact but a *profile UI* concern — the first real test of where the seams between kit modules fall. In v1 it lives here as a constant the game renders. When `kit-menu` / profile management is extracted, that module should import the constant rather than re-type the sentence.
 
 ---
 
@@ -152,7 +154,7 @@ This notice is a *leaderboard* fact but a *profile UI* concern — which makes i
 ## What this module deliberately does not do
 
 - **Mint or store `player_id`.** The game owns profiles. This module asks for identity via `getPlayer()` and never persists it.
-- **Track achievements.** It transmits IDs the game says were unlocked this run. Achievement *logic* is a separate future kit module.
+- **Anything with achievements.** Lifetime achievements — including Orbital Overhaul's tiered ones — are a separate kit module with a separate API. Nothing achievement-shaped belongs in a submit payload here.
 - **Maintain local high scores.** Local scores are a separate concern that must keep working with no network at all.
 - **Render anything.**
 
@@ -161,10 +163,10 @@ This notice is a *leaderboard* fact but a *profile UI* concern — which makes i
 ## Integration checklist for a new game
 
 1. Ensure the game mints a `player_id` UUID per local profile.
-2. Add the game's registry entry to the Worker (`gameId`, sort direction, metric label, plausibility bounds, achievement ID set) and deploy.
-3. Instrument the game to collect the `stats` fields declared in that registry entry — every scoring path must be represented, or the bound check can't work.
+2. Add the game's registry entry to the Worker (`gameId`, sort direction, metric label, `maxMetricPerSecond`, duration bounds, `statsFields`) and deploy.
+3. Collect whichever `stats` the game wants shown on a board row. No completeness requirement — these are display data.
 4. `beginRun()` at run start.
-5. `submit()` at game over, including quits, with `newAchievements` from this run.
+5. `submit()` at game over, including quits.
 6. Render the board from `fetchBoard()`, showing a marker on `flagged` entries.
 7. Show `NAME_CHANGE_NOTICE` in the rename flow.
 8. Show queue state on the title screen if `queueLength() > 0`.

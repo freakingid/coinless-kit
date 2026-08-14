@@ -1,14 +1,14 @@
 # kit-leaderboard — Deploy & Smoke Test Notes
 
-Target: `scores.coinlessgames.com` on the same Cloudflare account and zone as coinlessgames.com. The route already exists and is currently disabled pending this Worker.
+Target: `scores.coinlessgames.com` on the same Cloudflare account and zone as coinlessgames.com. The zone is active; the route is set up and currently disabled pending this Worker.
 
 ---
 
 ## Prerequisites
 
 - Wrangler **4.36 or later** (required for the stable rate limiting binding).
-- The `coinlessgames.com` zone active on Cloudflare (the site migration should land first, or at least DNS for the zone).
-- A DNS record for `scores` — a proxied placeholder `AAAA` to `100::` is the conventional trick, though attaching a Worker route usually creates what it needs.
+- The `coinlessgames.com` zone active on Cloudflare — confirmed.
+- A DNS record for `scores`. Attaching a Worker route usually creates what it needs; if not, a proxied placeholder `AAAA` to `100::` is the conventional trick.
 
 ---
 
@@ -53,7 +53,7 @@ npx wrangler d1 create coinless-scores
 }
 ```
 
-Two bindings sharing a `namespace_id` share counters, even across Workers on the account — so keep these IDs unique to this service and note them somewhere if other Workers get added later.
+Two bindings sharing a `namespace_id` share counters, even across Workers on the account — keep these IDs unique to this service and note them somewhere if other Workers get added later.
 
 `TURNSTILE_SECRET` is a secret, not a var, and is only needed if Turnstile is ever switched on:
 
@@ -95,7 +95,7 @@ Run these in order against production immediately after the first deploy.
 
 ```bash
 curl https://scores.coinlessgames.com/v1/health
-# → {"ok":true,"games":["orbital-overhaul"]}
+# -> {"ok":true,"games":["orbital-overhaul"]}
 ```
 
 **2. Origin check rejects a bare submit**
@@ -103,7 +103,7 @@ curl https://scores.coinlessgames.com/v1/health
 ```bash
 curl -X POST https://scores.coinlessgames.com/v1/scores \
   -H 'Content-Type: application/json' -d '{}'
-# → 403 ORIGIN_NOT_ALLOWED
+# -> 403 ORIGIN_NOT_ALLOWED
 ```
 
 **3. Valid submit**
@@ -117,43 +117,49 @@ curl -X POST https://scores.coinlessgames.com/v1/scores \
     "run_id":"11111111-1111-4111-8111-111111111111",
     "player_id":"22222222-2222-4222-8222-222222222222",
     "display_name":"TESTER","metric":1000,"duration_s":120,
-    "outcome":"died","stats":{"wave_reached":3},"new_achievements":[]
+    "outcome":"died","stats":{"wave_reached":3}
   }'
-# → 200, public_id, flagged:false, rank present
+# -> 200, public_id, flagged:false, rank present
 ```
 
 **4. Idempotency — repeat step 3 verbatim**
 
 ```
-# → 200 with "duplicate": true and the SAME public_id
+# -> 200 with "duplicate": true and the SAME public_id
 ```
 
 **5. Flagging — implausible rate**
 
-```bash
-# same as step 3 but metric 9000000, duration_s 10
-# → 200 with "flagged": true
+Same as step 3 but `"metric":900000, "duration_s":10` (900k over 10s is 90,000/sec against a 550/sec ceiling).
+
+```
+# -> 200 with "flagged": true and flag_reason mentioning rate_implausible
 ```
 
 **6. Name rejection**
 
-```bash
-# same as step 3 with "display_name":"WAY TOO LONG A NAME"
-# → 400 INVALID_NAME
+Same as step 3 with `"display_name":"WAY TOO LONG A NAME"`.
+
+```
+# -> 400 INVALID_NAME
 ```
 
 **7. Board read**
 
 ```bash
 curl 'https://scores.coinlessgames.com/v1/scores?game=orbital-overhaul&window=24h&limit=25'
-# → entries array, ranks starting at 1
+# -> entries array, ranks starting at 1
 ```
 
-**8. Top-players semantics** — submit a second run for the same `player_id` with a **lower** metric and a new `run_id`, then re-read the board. The player must still appear **once**, showing the higher score. This is the single most important behavioral check; it's easy to implement top-25-*runs* by accident.
+**8. Top-players semantics** — submit a second run for the same `player_id` with a **lower** metric and a new `run_id`, then re-read the board. The player must still appear **once**, showing the higher score.
 
-**9. Window boundaries** — read with `window=all` and `window=4h` and confirm both return sensible results and that `year` behaves as a rolling 365 days.
+This is the single most important behavioral check. Top-25-*runs* is very easy to implement by accident, and it looks correct until one strong player owns the whole board.
+
+**9. Window boundaries** — read with `window=all` and `window=4h`, confirm both return sensible results, and confirm `year` behaves as a rolling 365 days rather than a calendar year.
 
 **10. Rate limit** — fire 5 submits in under a minute from one IP; the 4th should return 429 `RATE_LIMITED`.
+
+**11. Unknown stats key** — submit with `"stats":{"nonsense_key":1}`. Should return 200 with `flagged: true`, not an error. Confirms drift is visible but non-blocking.
 
 ---
 
@@ -166,14 +172,14 @@ npx wrangler d1 execute coinless-scores --remote \
   --command "DELETE FROM scores WHERE game_version = '0.0.0-test'"
 ```
 
-Record a baseline for cost awareness. D1 returns a `meta` object per query containing `rows_read` and `rows_written`; log those from the board handler during the smoke test and note the numbers. Free plan headroom is 5M rows read/day and 100k written/day, so there is enormous room — but knowing the per-request scan size now makes it obvious later if a query starts scanning the whole table.
+Record a cost baseline. D1 returns a `meta` object per query containing `rows_read` and `rows_written`; log those from the board handler during the smoke test and note the numbers. Free plan headroom is 5M rows read/day and 100k written/day, so there is enormous room — but knowing the per-request scan size now makes it obvious later if a query starts scanning the whole table.
 
 ---
 
 ## Rollout order
 
-1. Deploy Worker + migrations, run the smoke test with the permissive default validator. **The API is complete and usable at this point.**
-2. Separate session: instrument Orbital Overhaul's `stats`, integrate `kit-leaderboard` per the client API doc.
-3. With real `stats` flowing, write Orbital Overhaul's game-specific `validate()` using the actual scoring constants and redeploy the Worker. Backfilled flagging is not retroactive, which is fine — early rows predate any real board.
+1. Deploy Worker + migrations, run the smoke tests. **The API is complete at this point** — there is no deferred validator phase, since per-game plausibility checks were deliberately dropped.
+2. Separate session: integrate `kit-leaderboard` into Orbital Overhaul per the client API doc's integration checklist, collecting whichever display stats look good on a board row.
+3. Later, separately: the achievements module and its own API.
 
-Step 3 is the piece deliberately deferred. Nothing in steps 1 or 2 blocks on it.
+Nothing in step 1 blocks on the game, and nothing in step 2 blocks on step 3.

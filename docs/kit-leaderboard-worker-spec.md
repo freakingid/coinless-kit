@@ -3,17 +3,17 @@
 **Service:** `scores.coinlessgames.com`
 **Runtime:** Cloudflare Workers + D1
 **Status:** implementation spec, v1
-**Scope:** game-agnostic. Nothing in this document is specific to Orbital Overhaul except one registry entry.
+**Scope:** game-agnostic. **Scores only.** Achievements are explicitly out of scope — see §9.
 
 ---
 
 ## 1. Design principles
 
 1. **Thin universal spine + per-game JSON blob.** Games share almost nothing stat-wise. The `scores` table holds only what every game has; everything else lives in a `stats` JSON column whose shape is defined by the game, not the database. D1 is SQLite, so `json_extract` and generated columns are available later if a specific query needs them.
-2. **The registry is code, not data.** Each game's plausibility validator is a JavaScript function, so it must live in the Worker source regardless. Putting sort direction, metric label, and the valid achievement set alongside it keeps one registry in one place. Adding a game is a code change and a deploy — which it would be anyway.
+2. **The registry is code, not data.** Sort direction, metric label, and bounds live in a Worker source module rather than a database table. Adding a game is a code change and a deploy — which it would be anyway.
 3. **Flag, don't reject.** A false positive on a genuinely great run is worse than a flagged row sitting in the table. Only structurally invalid payloads get a 4xx.
 4. **Server clock is authoritative.** `submitted_at` is set by the Worker. Client-supplied timestamps are ignored entirely, not validated.
-5. **Honest threat model.** The game is public JavaScript, so a determined person can forge a plausible submission. Every control here raises effort; none is proof. The goal is a board that stays respectable, not one that is cryptographically sound.
+5. **Cheap bounds, not proof.** The game is public JavaScript, so a determined person can forge a plausible submission. There is deliberately **no per-game score reconstruction validator** — the effort/payout is poor. A score-per-second ceiling plus rate limiting is the whole anti-cheat story. It catches absurdity and casual spam; it does not catch a careful forger, and it isn't meant to.
 
 ---
 
@@ -33,9 +33,9 @@ CREATE TABLE scores (
   duration_s    INTEGER NOT NULL,
   outcome       TEXT    NOT NULL CHECK (outcome IN ('died','completed','quit')),
   game_version  TEXT    NOT NULL,
-  stats         TEXT    NOT NULL,          -- JSON object; shape defined per game
+  stats         TEXT    NOT NULL,          -- JSON object; DISPLAY ONLY (see below)
   flagged       INTEGER NOT NULL DEFAULT 0,
-  flag_reason   TEXT,                      -- nullable; which check tripped
+  flag_reason   TEXT,                      -- nullable; which bound tripped
   submitted_at  INTEGER NOT NULL           -- SERVER clock, unix seconds
 );
 
@@ -47,29 +47,22 @@ CREATE INDEX idx_scores_board
 CREATE INDEX idx_scores_game_metric
   ON scores(game_id, metric DESC);
 
--- "This player's best in this game" — used by the rank calculation and future profile views.
+-- "This player's best in this game" — rank calculation and future profile views.
 CREATE INDEX idx_scores_player_best
   ON scores(game_id, player_id, metric DESC);
-
-CREATE TABLE player_achievements (
-  player_id      TEXT    NOT NULL,
-  game_id        TEXT    NOT NULL,
-  achievement_id TEXT    NOT NULL,
-  unlocked_at    INTEGER NOT NULL,
-  score_id       INTEGER REFERENCES scores(id),  -- provenance: which run reported it
-  PRIMARY KEY (player_id, game_id, achievement_id)
-);
 ```
 
+One table. That's the whole schema.
+
 ### Notes on specific columns
+
+**`stats` is display data.** Its only job is to make a board row interesting — "wave 14, 96 canisters delivered" alongside the score. Nothing validates against it and nothing computes from it. Add or drop fields freely between game versions; old rows keep whatever shape they were submitted with, and the client renders what it finds.
 
 **`run_id` (idempotency).** The client mints this once at run start and reuses it for every retry of that run. `UNIQUE` makes a duplicate `INSERT` fail cleanly; the handler catches the constraint violation, looks up the existing row, and returns the original `public_id` plus a freshly computed rank with `"duplicate": true`. A flaky connection or a backgrounded tab therefore cannot produce two board entries for one run.
 
 **`player_id` vs `display_name`.** `player_id` is minted by the game (`crypto.randomUUID()`) once per local profile and never displayed. `display_name` is mutable and stored per row — so if a player renames themselves, older entries keep the old name. That is intentional, and the client is required to warn about it before a rename (see the client API doc).
 
-**No `games` table.** Sort direction, metric label, achievement set, and validator all live in the Worker registry (§3).
-
-**Growth.** Rows are never updated after insert. At Paul-scale this table stays small for years. If it grows enough that all-time rank counting gets expensive, the fix is a scheduled prune that keeps each player's personal best per game plus everything inside the 30-day window — deliberately out of scope for v1.
+**Growth.** Rows are never updated after insert. At this scale the table stays small for years. If all-time rank counting ever gets expensive, the fix is a scheduled prune keeping each player's personal best plus everything inside the 30-day window — deliberately out of scope for v1.
 
 ---
 
@@ -79,50 +72,35 @@ CREATE TABLE player_achievements (
 // src/registry.js
 export const GAMES = {
   'orbital-overhaul': {
-    displayName:  'Orbital Overhaul',
+    displayName:   'Orbital Overhaul',
     sortDirection: 'desc',          // 'desc' = higher is better; 'asc' for time-based games
-    metricLabel:  'Score',
+    metricLabel:   'Score',
 
-    // --- permissive default validator inputs (see §4) ---
-    maxMetric:         10_000_000,  // absolute ceiling; a typo-level sanity bound
-    maxMetricPerSecond: 400,        // score-per-second ceiling
+    // --- bounds (§4) ---
+    maxMetricPerSecond: 550,        // measured best rate x4; catches absurdity only
+    maxMetric:          10_000_000, // typo-level ceiling
     minDurationS:       5,
     maxDurationS:       86_400,
 
-    // Known stats keys. Unknown keys are stored as-sent but flag the row,
-    // so a client/server version drift is visible rather than silent.
+    // Display-only stats keys. Unknown keys are stored as-sent but flag the row,
+    // purely so client/server version drift is visible rather than silent.
+    // CONFIRM OR TRIM THIS LIST — these are a suggestion, not derived from the game.
     statsFields: [
-      'wave_reached', 'canisters_delivered', 'ufo_kills', 'hunter_kills',
-      'garbage_sat_kills', 'max_single_haul', 'longest_chain'
-    ],
-
-    // Valid achievement IDs. Unknown IDs are skipped and flag the row.
-    achievements: new Set([
-      // populate when Orbital Overhaul's achievement list is finalized
-    ]),
-
-    // Game-specific bound check. null = use the permissive default only.
-    // Orbital Overhaul's real check lands in the session where stats
-    // instrumentation is added to the game.
-    validate: null
+      'wave_reached',
+      'canisters_delivered',
+      'hunter_kills',
+      'saucer_kills',
+      'debris_destroyed',
+      'longest_chain',
+      'max_single_haul'
+    ]
   }
 };
 ```
 
-`maxMetricPerSecond` should be set generously — roughly 3–5× the best plausible sustained rate. It exists to catch a submission claiming a million points in eight seconds, not to police skilled play.
+Adding a game later means one more entry here and a deploy. There is no per-game validator function and no plausibility hook — the bounds above are the complete check.
 
-When Orbital Overhaul's `validate` is written, its shape is:
-
-```js
-validate(payload) {
-  // payload: { metric, duration_s, outcome, stats, game_version }
-  // Return null if plausible, or { reason: 'short_string' } to flag.
-  // Must not throw. Must not reject — flagging only.
-}
-```
-
-The intended Orbital Overhaul implementation computes the maximum achievable metric from the reported stats:
-`canisters × maxPointsPerCanister + Σ(kills × maxPointsPerKillType) + waveBonusTable[wave_reached]`, using the same constants `addScore()` already enforces in-game. This only works if `stats` covers every scoring path — worth auditing when the instrumentation is added.
+`maxMetricPerSecond` is set generously on purpose. 550 is roughly four times the best real sustained rate in Orbital Overhaul, so it will never fire on legitimate play, however good the player.
 
 ---
 
@@ -133,31 +111,29 @@ In order. First failure wins.
 | Step | Failure mode | Result |
 |---|---|---|
 | Method + path routing | — | 404/405 |
-| Origin allowlist (§7) | not allowed | 403 `ORIGIN_NOT_ALLOWED` |
-| Rate limit (§7) | exceeded | 429 `RATE_LIMITED` |
-| Body parses as JSON, ≤ 8 KB | malformed/oversized | 400 `INVALID_PAYLOAD` |
+| Origin allowlist (§6) | not allowed | 403 `ORIGIN_NOT_ALLOWED` |
+| Rate limit (§6) | exceeded | 429 `RATE_LIMITED` |
+| Body parses as JSON, <= 8 KB | malformed/oversized | 400 `INVALID_PAYLOAD` |
 | `game_id` in registry | unknown | 400 `INVALID_GAME` |
-| Turnstile (if enabled, §8) | verify fails | 403 `TURNSTILE_FAILED` |
+| Turnstile (if enabled, §7) | verify fails | 403 `TURNSTILE_FAILED` |
 | Required fields present, correct types | missing/wrong type | 400 `INVALID_PAYLOAD` |
 | `run_id` / `player_id` are UUID v4 | malformed | 400 `INVALID_PAYLOAD` |
-| `display_name` rules (§6) | illegal chars/length | 400 `INVALID_NAME` |
-| `display_name` profanity filter (§6) | matched | 400 `NAME_REJECTED` |
-| **Permissive default plausibility** | out of bounds | **flag, continue** |
-| Game-specific `validate()` | returns reason | **flag, continue** |
+| `display_name` rules (§5) | illegal chars/length | 400 `INVALID_NAME` |
+| `display_name` profanity filter (§5) | matched | 400 `NAME_REJECTED` |
+| **Bounds check** | out of bounds | **flag, continue** |
 | Unknown `stats` keys | present | **flag, continue** |
-| Unknown `achievement_id`s | present | **flag + skip those rows, continue** |
 | INSERT | `run_id` conflict | 200 with `"duplicate": true` |
 
-### Permissive default plausibility (v1 behavior)
+### Bounds check (the whole anti-cheat)
 
 ```
-duration_s < minDurationS            → flag 'duration_too_short'
-duration_s > maxDurationS            → flag 'duration_too_long'
-metric < 0 or metric > maxMetric     → flag 'metric_out_of_range'
-metric > maxMetricPerSecond * duration_s → flag 'rate_implausible'
+duration_s < minDurationS                 -> flag 'duration_too_short'
+duration_s > maxDurationS                 -> flag 'duration_too_long'
+metric < 0 or metric > maxMetric          -> flag 'metric_out_of_range'
+metric > maxMetricPerSecond * duration_s  -> flag 'rate_implausible'
 ```
 
-Multiple reasons are joined with `;` into `flag_reason`. `flagged` is `1` if any reason fired.
+Multiple reasons join with `;` into `flag_reason`. `flagged` is `1` if any reason fired. Nothing here rejects a submission.
 
 ---
 
@@ -178,16 +154,13 @@ Base: `https://scores.coinlessgames.com`. All responses `application/json`.
   "duration_s": 612,
   "outcome": "died",
   "stats": {
-    "wave_reached": 14, "canisters_delivered": 96, "ufo_kills": 3,
-    "hunter_kills": 11, "garbage_sat_kills": 2, "max_single_haul": 6,
-    "longest_chain": 4
+    "wave_reached": 14, "canisters_delivered": 96, "hunter_kills": 11,
+    "saucer_kills": 3, "debris_destroyed": 210, "longest_chain": 4,
+    "max_single_haul": 6
   },
-  "new_achievements": ["dock_king", "wave_15_survivor"],
   "turnstile_token": null
 }
 ```
-
-`new_achievements` contains **only** IDs newly unlocked during this run — never a lifetime list, never a count. The `player_achievements` primary key makes resubmission a silent no-op, so no upsert logic is needed and a retried submit is harmless. A lifetime total is a `COUNT(*)` at read time, which also means it can't be claimed by a client.
 
 **Response 200:**
 
@@ -210,11 +183,11 @@ Returning the submitter's own rank saves a round trip and is what the game shows
 
 Error codes: `INVALID_PAYLOAD`, `INVALID_GAME`, `INVALID_NAME`, `NAME_REJECTED`, `ORIGIN_NOT_ALLOWED`, `RATE_LIMITED`, `TURNSTILE_FAILED`, `SERVER_ERROR`.
 
-The client distinguishes these: `INVALID_NAME` / `NAME_REJECTED` / `INVALID_PAYLOAD` are permanent and must **not** be queued for retry (§ client doc). `RATE_LIMITED`, `SERVER_ERROR`, and network failures are transient and **must** be queued.
+The client distinguishes these: `INVALID_NAME` / `NAME_REJECTED` / `INVALID_PAYLOAD` are permanent and must **not** be queued for retry. `RATE_LIMITED`, `SERVER_ERROR`, and network failures are transient and **must** be queued.
 
 ### `GET /v1/scores?game=<slug>&window=<w>&limit=<n>`
 
-`window` ∈ `4h | 8h | 12h | 24h | 7d | 30d | year | all`. All eight are the same query with a computed cutoff — no special case for any of them. `year` is a rolling 365 days, not a calendar year, so it stays on the same code path. `all` uses cutoff `0`.
+`window` in `4h | 8h | 12h | 24h | 7d | 30d | year | all`. All eight are the same query with a computed cutoff — no special case for any of them. `year` is a rolling 365 days, not a calendar year, so it stays on the same code path. `all` uses cutoff `0`.
 
 `limit` default 25, max 100. Invalid values are clamped, not rejected.
 
@@ -253,7 +226,7 @@ Flagged entries **are** returned, occupy a rank slot, and carry `flagged: true`.
 One row per player: their best run in the window, with `stats`, `outcome`, and `duration_s` taken from **that same run** (not aggregated across runs). Ties on `metric` break by earlier `submitted_at`. Two local profiles on one machine are two `player_id`s and legitimately occupy two slots.
 
 ```sql
--- descending games; for sortDirection='asc' swap DESC→ASC in both ORDER BYs
+-- descending games; for sortDirection='asc' swap DESC->ASC in both ORDER BYs
 WITH windowed AS (
   SELECT * FROM scores
   WHERE game_id = ?1 AND submitted_at > ?2
@@ -285,13 +258,13 @@ SELECT COUNT(*) + 1 AS rank FROM (
 );
 ```
 
-**Cost note.** D1 bills *rows scanned*, not rows returned, and the free plan allows 5M rows read/day and 100k rows written/day. The group-by-player queries scan the game's rows within the window, so an all-time board is a full per-game scan. That is fine at this scale and nowhere near the ceiling, but it is the thing that eventually motivates pruning — worth checking the `meta.rows_read` value that D1 returns on each query during the smoke test so there's a baseline.
+**Cost note.** D1 bills *rows scanned*, not rows returned; the free plan allows 5M rows read/day and 100k rows written/day. The group-by-player queries scan the game's rows within the window, so an all-time board is a full per-game scan. Fine at this scale and nowhere near the ceiling, but it is what eventually motivates pruning — log the `meta.rows_read` value D1 returns during the smoke test so there's a baseline.
 
 ---
 
-## 6. Display name handling
+## 6. Display names, origin, rate limiting
 
-**Normalization** (applied before validation and before storage):
+### Name normalization
 
 1. Trim leading/trailing whitespace, collapse internal runs of spaces to one.
 2. Uppercase.
@@ -300,22 +273,20 @@ SELECT COUNT(*) + 1 AS rank FROM (
 
 Reject with 400 and a reason. **Never silently truncate** — a player who typed 15 characters should learn that, not discover a mangled name on the board.
 
-**Profanity filter.** Static wordlist in the Worker source, no external service. A raw substring match is decorative, so normalize before matching:
+### Profanity filter
 
-1. Map leetspeak: `4→A 3→E 1→I 0→O 5→S 7→T 8→B @→A $→S`.
-2. Collapse runs of the same letter to one (`FUUUCK` → `FUCK`).
-3. Strip everything that isn't `A-Z0-9`.
-4. Substring match against the list.
+Static wordlist in the Worker source, no external service. A raw substring match is decorative, so normalize before matching:
 
-Expect false positives (the Scunthorpe problem). Since the response includes a reason, the client can say "that name isn't allowed, try another" rather than failing mysteriously. Keep the list short and obvious; it is a decency filter, not a content moderation system.
+1. Map leetspeak: `4->A 3->E 1->I 0->O 5->S 7->T 8->B @->A $->S`
+2. Collapse runs of the same letter (`FUUUCK` -> `FUCK`)
+3. Strip everything that isn't `A-Z0-9`
+4. Substring match against the list
+
+Expect false positives (the Scunthorpe problem). Since the response includes a reason, the client can say "that name isn't allowed, try another." Keep the list short and obvious; it's a decency filter, not content moderation.
 
 The **server-side filter is authoritative on every submit.** The client's pre-check exists purely so the player finds out at the name-entry screen instead of after a great run — it is UX, never a control.
 
----
-
-## 7. Origin allowlist & rate limiting
-
-### Origin
+### Origin allowlist
 
 Allow when the `Origin` header's host equals or is a subdomain of:
 
@@ -327,9 +298,9 @@ ungrounded.net   newgrounds.com     # Newgrounds upload origins
 
 Plus `localhost` / `127.0.0.1` **only** when `env.ENVIRONMENT === 'dev'`.
 
-This one matters: games embedded on itch or Newgrounds run from those platforms' origins, not from coinlessgames.com. Omitting them turns the Origin check into a distribution blocker that only shows up after publishing.
+This one matters: games embedded on itch or Newgrounds run from those platforms' origins, not from coinlessgames.com. Omitting them turns the Origin check into a distribution blocker that only appears after publishing.
 
-Requests with no `Origin` header are rejected on `POST` and allowed on `GET`. Return the matched origin in `Access-Control-Allow-Origin` (not `*`, since the allowlist is finite) and handle `OPTIONS` preflight.
+No `Origin` header: reject on `POST`, allow on `GET`. Return the matched origin in `Access-Control-Allow-Origin` (not `*`, since the allowlist is finite) and handle `OPTIONS` preflight.
 
 Be clear-eyed: `Origin` is trivially forged with `curl -H`. It stops drive-by scripts and misrouted requests. It is not security.
 
@@ -346,50 +317,50 @@ Use the Workers rate limiting binding (GA; requires Wrangler 4.36+). The binding
 
 Key submits on `${clientIp}:${game_id}` and reads on `${clientIp}`. Three submits per minute is far above real play (a run takes minutes) and far below what makes scripted spam worthwhile. Get the IP from `CF-Connecting-IP`.
 
-Limits are enforced per Cloudflare location and are eventually consistent, so a burst can slightly overshoot. That's acceptable here.
+Limits are enforced per Cloudflare location and are eventually consistent, so a burst can slightly overshoot. Acceptable here.
 
 ---
 
-## 8. Turnstile (wired, dark)
+## 7. Turnstile (wired, dark)
 
 Build the hook now, leave it off. Enabling later is then config plus a script tag, not a re-architecture.
 
-- `env.TURNSTILE_ENABLED` — string `'true'` / `'false'`, default `'false'`.
-- `env.TURNSTILE_SECRET` — Wrangler secret, only required when enabled.
-- Request field `turnstile_token` — accepted always, verified only when enabled. When enabled and the field is missing → 403 `TURNSTILE_FAILED`.
-- Verification: `POST https://challenges.cloudflare.com/turnstile/v0/siteverify` with `secret`, `response`, and `remoteip`; require `success: true`.
+- `env.TURNSTILE_ENABLED` — string `'true'` / `'false'`, default `'false'`
+- `env.TURNSTILE_SECRET` — Wrangler secret, only required when enabled
+- Request field `turnstile_token` — accepted always, verified only when enabled. When enabled and missing -> 403 `TURNSTILE_FAILED`
+- Verification: `POST https://challenges.cloudflare.com/turnstile/v0/siteverify` with `secret`, `response`, `remoteip`; require `success: true`
 
-Reasoning for leaving it off at launch: it adds an external script to a single-file HTML game (a real nuisance on itch/Newgrounds), and it doesn't stop a headless browser farming tokens anyway. It stops casual curl spam — which rate limiting plus Origin already handles. Turn it on if the board actually gets targeted.
+Reasoning for launching with it off: it adds an external script to a single-file HTML game (a real nuisance on itch/Newgrounds), and it doesn't stop a headless browser farming tokens anyway. It stops casual curl spam — which rate limiting plus Origin already handles. Turn it on if the board actually gets targeted.
 
 ---
 
-## 9. Worker structure
+## 8. Worker structure
 
 ```
 src/
   index.js          # router, CORS, origin check, rate limit, error envelope
   registry.js       # GAMES (§3)
-  validate.js       # name normalization, profanity, default + per-game plausibility
+  validate.js       # name normalization, profanity, bounds check
   scores.js         # POST handler, idempotency, rank computation
   board.js          # GET handler, window cutoffs, top-N-players query
-  achievements.js   # new_achievements insert
 migrations/
   0001_init.sql
 wrangler.jsonc
 ```
 
-No framework needed — two endpoints don't justify Hono. Plain `fetch` handler with a small switch.
+No framework — two endpoints don't justify Hono. Plain `fetch` handler with a small switch.
 
 **Conventions:** every handler returns through one `json(status, body)` helper so the error envelope and CORS headers are applied in exactly one place. Unhandled exceptions become 500 `SERVER_ERROR` with the detail logged, never echoed to the client.
 
 ---
 
-## 10. Deliberately out of scope for v1
+## 9. Deliberately out of scope for v1
 
 Named here so they don't get quietly invented during implementation:
 
+- **Achievements, entirely.** No `player_achievements` table, no `new_achievements` field, no achievement IDs in the registry. Lifetime achievements are a separate kit module with a separate API, designed later. Orbital Overhaul's tiered achievements (one ID plus a tier number) will live there, not here.
+- Per-game plausibility validators. Explicitly rejected — the bounds check in §4 is the complete story.
 - Player profile / history endpoint (`player_id` and the indexes support it later).
-- Cross-game unified profile.
 - Moderation UI for flagged rows — inspect via `wrangler d1 execute` for now.
 - Score pruning / archival.
 - Weekly reset boards distinct from rolling windows.
