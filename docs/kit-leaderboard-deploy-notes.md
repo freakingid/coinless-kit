@@ -19,6 +19,32 @@ npx wrangler d1 create coinless-scores
 # copy the returned database_id into wrangler.jsonc
 ```
 
+## DNS gotcha: the route does not create the DNS record
+
+Attaching a `routes` entry in `wrangler.jsonc` and running `wrangler deploy`
+does **not** reliably create the DNS record for a new subdomain — the route
+can be live on the Worker side while `scores.coinlessgames.com` still
+resolves to nothing.
+
+Confirm and fix if needed:
+
+```bash
+dig +short scores.coinlessgames.com
+```
+
+If that's empty, add a proxied placeholder record manually in the
+dashboard (DNS → Add record):
+
+    Type: AAAA
+    Name: scores
+    IPv6: 100::
+    Proxy status: Proxied (orange cloud)
+
+The `100::` address is a conventional discard address — traffic never
+actually goes there, because the orange-cloud proxy intercepts it and
+routes to the Worker instead. This is a placeholder to satisfy Cloudflare's
+DNS, not a real endpoint.
+
 ## `wrangler.jsonc`
 
 ```jsonc
@@ -52,6 +78,29 @@ npx wrangler d1 create coinless-scores
   "observability": { "enabled": true }
 }
 ```
+
+## Known gap: rate limiting is not enforced on the Workers Free plan
+
+The `ratelimits` binding above works correctly in local `wrangler dev` but
+**does not enforce in production on the Workers Free plan** — rapid
+successive submits from one IP all return 200 with no 429. Confirmed by
+sending 9 rapid submits against the live endpoint.
+
+Practical effect: right now, nothing in production actually caps submission
+rate. The Origin allowlist was always non-security (trivially forged with
+`curl -H`), so at present there is no real deterrent to scripted submission
+spam beyond the bounds check flagging obviously-implausible scores.
+
+Accepted as-is for now, given current traffic. If the board is ever
+actually targeted:
+
+- Upgrading to Workers Paid is the most direct fix (rate limiting is
+  documented as enforced there).
+- Turnstile (§7) was built dark for exactly this situation — flipping
+  `TURNSTILE_ENABLED` to `'true'` and adding the client script raises the
+  bar considerably without a plan upgrade.
+
+Revisit only if abuse is actually observed — not worth solving preemptively.
 
 Two bindings sharing a `namespace_id` share counters, even across Workers on the account — keep these IDs unique to this service and note them somewhere if other Workers get added later.
 
