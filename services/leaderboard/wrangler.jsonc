@@ -1,0 +1,29 @@
+{
+  "name": "coinless-scores",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-14",
+
+  "routes": [
+    { "pattern": "scores.coinlessgames.com/*", "zone_name": "coinlessgames.com" }
+  ],
+
+  "d1_databases": [
+    {
+      "binding": "coinless_scores",
+      "database_name": "coinless-scores",
+      "database_id": "fee9d1ef-4c89-4c1e-910a-cda98080888c"
+    }
+  ],
+
+  "ratelimits": [
+    { "name": "SUBMIT_LIMITER", "namespace_id": "1001", "simple": { "limit": 3,  "period": 60 } },
+    { "name": "READ_LIMITER",   "namespace_id": "1002", "simple": { "limit": 60, "period": 60 } }
+  ],
+
+  "vars": {
+    "ENVIRONMENT": "production",
+    "TURNSTILE_ENABLED": "false"
+  },
+
+  "observability": { "enabled": true }
+}

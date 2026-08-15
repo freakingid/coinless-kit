@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>kit-leaderboard demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  section { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }
+  label { display: block; margin: 0.5rem 0 0.2rem; font-size: 0.85rem; color: #555; }
+  input, select { padding: 0.3rem; font-size: 0.9rem; width: 100%; box-sizing: border-box; }
+  button { margin-top: 0.75rem; padding: 0.4rem 0.9rem; cursor: pointer; }
+  pre { background: #f5f5f5; padding: 0.6rem; overflow-x: auto; font-size: 0.8rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
+  .flagged { color: #b45309; font-weight: bold; }
+  .queue-note { font-size: 0.8rem; color: #555; }
+  .row { display: flex; gap: 0.75rem; }
+  .row > div { flex: 1; }
+</style>
+</head>
+<body>
+
+<h1>kit-leaderboard demo</h1>
+<p>Exercises <code>submit()</code> and <code>fetchBoard()</code> against a live
+Worker. Uses <code>orbital-overhaul</code> as the game id (the only entry in
+the registry right now) purely to get real, valid submissions — this page
+has no other connection to that game. Submissions here use
+<code>game_version: "0.0.0-demo"</code> so they're easy to find and delete
+later.</p>
+
+<section>
+  <h2>Config</h2>
+  <label for="endpoint">Endpoint</label>
+  <input id="endpoint" value="https://scores.coinlessgames.com">
+  <div class="row">
+    <div>
+      <label for="playerId">player_id (auto-generated, persisted in this browser)</label>
+      <input id="playerId" readonly>
+    </div>
+    <div>
+      <label for="displayName">Display name</label>
+      <input id="displayName" value="DEMO">
+    </div>
+  </div>
+  <button id="validateNameBtn">Validate name</button>
+  <pre id="nameResult"></pre>
+</section>
+
+<section>
+  <h2>Submit a run</h2>
+  <div class="row">
+    <div>
+      <label for="metric">metric</label>
+      <input id="metric" type="number" value="12345">
+    </div>
+    <div>
+      <label for="durationS">duration_s</label>
+      <input id="durationS" type="number" value="180">
+    </div>
+    <div>
+      <label for="outcome">outcome</label>
+      <select id="outcome">
+        <option>died</option>
+        <option>completed</option>
+        <option>quit</option>
+      </select>
+    </div>
+  </div>
+  <button id="beginRunBtn">Begin run</button>
+  <button id="submitBtn">Submit</button>
+  <p class="queue-note">Run id: <code id="runId">(none — click Begin run)</code></p>
+  <p class="queue-note">Queue length: <span id="queueLength">0</span>
+    <button id="flushBtn">Flush queue</button>
+  </p>
+  <pre id="submitResult"></pre>
+</section>
+
+<section>
+  <h2>Board</h2>
+  <div class="row">
+    <div>
+      <label for="windowSel">window</label>
+      <select id="windowSel">
+        <option>4h</option><option>8h</option><option>12h</option>
+        <option selected>24h</option><option>7d</option><option>30d</option>
+        <option>year</option><option>all</option>
+      </select>
+    </div>
+    <div>
+      <label for="limit">limit</label>
+      <input id="limit" type="number" value="25">
+    </div>
+  </div>
+  <button id="loadBoardBtn">Load board</button>
+  <table id="boardTable">
+    <thead><tr><th>#</th><th>Name</th><th>Metric</th><th>Outcome</th><th>Stats</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<script type="module">
+  import * as KitLeaderboard from './kit-leaderboard.js';
+
+  const playerIdKey = 'coinless.demo.player-id';
+  let playerId = localStorage.getItem(playerIdKey);
+  if (!playerId) {
+    playerId = crypto.randomUUID();
+    localStorage.setItem(playerIdKey, playerId);
+  }
+  document.getElementById('playerId').value = playerId;
+
+  let board = null;
+
+  function createBoard() {
+    board = KitLeaderboard.create({
+      endpoint: document.getElementById('endpoint').value.replace(/\/$/, ''),
+      gameId: 'orbital-overhaul',
+      gameVersion: '0.0.0-demo',
+      getPlayer: () => ({
+        playerId,
+        displayName: document.getElementById('displayName').value
+      }),
+      onEvent: (name, detail) => {
+        console.log('[kit-leaderboard]', name, detail);
+        refreshQueueLength();
+      }
+    });
+    refreshQueueLength();
+  }
+  createBoard();
+
+  document.getElementById('endpoint').addEventListener('change', createBoard);
+
+  function refreshQueueLength() {
+    document.getElementById('queueLength').textContent = board.queueLength();
+  }
+
+  document.getElementById('validateNameBtn').addEventListener('click', () => {
+    const result = KitLeaderboard.validateName(document.getElementById('displayName').value);
+    document.getElementById('nameResult').textContent = JSON.stringify(result, null, 2);
+  });
+
+  document.getElementById('beginRunBtn').addEventListener('click', () => {
+    const runId = board.beginRun();
+    document.getElementById('runId').textContent = runId;
+  });
+
+  document.getElementById('submitBtn').addEventListener('click', async () => {
+    const resultEl = document.getElementById('submitResult');
+    resultEl.textContent = 'submitting...';
+    const outcome = await board.submit({
+      metric: Number(document.getElementById('metric').value),
+      durationS: Number(document.getElementById('durationS').value),
+      outcome: document.getElementById('outcome').value,
+      stats: {
+        wave_reached: 5,
+        canisters_delivered: 20,
+        hunter_kills: 3,
+        saucer_kills: 1,
+        debris_destroyed: 40
+      }
+    });
+    resultEl.textContent = JSON.stringify(outcome, null, 2);
+    refreshQueueLength();
+  });
+
+  document.getElementById('flushBtn').addEventListener('click', async () => {
+    const result = await board.flushQueue();
+    document.getElementById('submitResult').textContent = 'flushQueue() -> ' + JSON.stringify(result, null, 2);
+    refreshQueueLength();
+  });
+
+  document.getElementById('loadBoardBtn').addEventListener('click', async () => {
+    const tbody = document.querySelector('#boardTable tbody');
+    tbody.innerHTML = '<tr><td colspan="5">loading...</td></tr>';
+    try {
+      const result = await board.fetchBoard({
+        window: document.getElementById('windowSel').value,
+        limit: Number(document.getElementById('limit').value)
+      });
+      tbody.innerHTML = '';
+      for (const entry of result.entries) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${entry.rank}</td>
+          <td class="${entry.flagged ? 'flagged' : ''}">${entry.displayName}${entry.flagged ? ' ⚑' : ''}</td>
+          <td>${entry.metric}</td>
+          <td>${entry.outcome}</td>
+          <td>${JSON.stringify(entry.stats)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+      if (result.entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5">no entries</td></tr>';
+      }
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="5">fetchBoard failed: ${err.message}</td></tr>`;
+    }
+  });
+</script>
+
+</body>
+</html>
