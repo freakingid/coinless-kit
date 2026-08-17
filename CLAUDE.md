@@ -41,6 +41,16 @@ owner's instruction, overriding the example name in the deploy notes doc.
   designed later, by deliberate decision — not an oversight.
 - No per-game plausibility/score-reconstruction validators. The bounds check
   in the worker spec is the complete anti-cheat story, on purpose.
-- No frameworks, no build step, no dependencies unless a doc says otherwise.
+- No frameworks. Modules are plain ES modules that run directly from source
+  in a browser. No bundler, transpiler, or watcher is required to develop,
+  test, or read a module day to day, and none may ever become required to
+  understand one — that means no JSX, no TypeScript syntax, no decorators,
+  no compile-time codegen, no framework build plugins in module source.
+- A release build step is expected and fine. One scripted command (esbuild,
+  near-zero config) inlines modules into a game's distributable HTML at
+  release time. That step is deliberate. The rule above constrains what
+  module *source* may depend on, not how a game is shipped.
+- Dependencies default to zero. A strong preference, not an absolute ban: a
+  module may take one if its doc names it and says why.
 - If something in a doc looks ambiguous, wrong, or missing, stop and ask
   rather than inventing a resolution and moving on.

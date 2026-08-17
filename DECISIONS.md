@@ -139,3 +139,10 @@ queue is a no-op (nothing persisted, nothing kept in memory either) and
 `queueLength()` reports 0 — matches the doc's "degrades to no queue... must
 not throw," and `submit()` still truthfully resolves `{status:'queued',
 reason:'offline'}` for that call even though nothing was actually queued.
+
+## 2026-08-17 Repo Rules
+
+'No build step' was too broad; it was meant to ban source-level tooling, and 
+was blocking the intended esbuild release step. Split into two rules; 
+the esbuild inline step is explicitly permitted.
+
