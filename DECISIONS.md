@@ -265,14 +265,7 @@ the Unicode the rules exclude. Checking the pre-uppercase string closes it.
 Marked ⛔ in the doc because reordering the two steps looks like a harmless
 simplification.
 
-**Open, not resolved: the Worker still holds a third copy.**
-`services/leaderboard/src/validate.js` implements the same rules server-side and
-is authoritative. It's in this repo and could import kit-names, eliminating the
-last duplicate — but that changes deployed Worker behavior and requires a
-redeploy plus a re-run of the deploy notes' smoke-test sequence. Raised as a
-recommendation for the repo owner rather than folded into a client-module
-change. **Until it's taken, a change to the name rules is a change to two
-files, and the Worker one ships separately.**
+**Update, 2026-08-18 — Worker duplicate closed.** The above was originally left open: services/leaderboard/src/validate.js held a third inline copy of the same rules, and importing kit-names into it would touch deployed Worker behavior, requiring a redeploy and a full smoke-test re-run. Decided to do it now rather than defer: the site isn't publicized yet and carries no production traffic, which is exactly the window where that cost is cheapest. The Worker's inline copy is deleted outright rather than kept as an unused fallback — a fallback that only runs when an import fails is untested code, and a broken import should fail the deploy loudly rather than silently serve stale rules. wrangler deploy already bundles Worker source with esbuild, so the import is ordinary, not new infrastructure. Requires: redeploy, full smoke-test sequence re-run from the deploy notes, with extra attention to the name-rejection case since that's the behavior actually changing.
 
 ## 2026-08-17 — kit-profile design (extraction from Orbital Overhaul)
 

@@ -46,17 +46,22 @@ makes that false. Therefore:
 
 Record this in `DECISIONS.md` when implementing.
 
-### 1.2 The Worker still holds its own copy — flagged, not resolved
+### 1.2 The Worker imports kit-names too
 
 `services/leaderboard/src/validate.js` implements these rules server-side and
-is authoritative. It lives in this same repo, so it *could* import kit-names
-and eliminate the last copy.
+is authoritative. It imports `validateName` from kit-names rather than keeping
+an independent copy — `wrangler deploy` already bundles the Worker's source
+with esbuild, so this is an ordinary sibling import, not new infrastructure.
 
-**Not doing that here.** It changes deployed Worker behavior and needs a
-redeploy plus a re-run of the smoke-test sequence, which is a separate task
-with its own risk. Raising it as a recommendation for the repo owner rather
-than folding it into a client-module change. Until then, a change to the rules
-in this doc is a change to **two** files, and the Worker one ships separately.
+Decided 2026-08-18: with the site not yet publicized and no production
+traffic, the cost of a redeploy plus a smoke-test re-run is low, so the
+duplicate was closed immediately rather than left as a known gap. See
+`DECISIONS.md`.
+
+**The Worker's copy of the rules is deleted, not kept as a fallback.** A
+fallback that only runs if the import fails is untested code that becomes a
+liability the day it's needed. If the import breaks, the deploy should fail
+loudly, not degrade to stale rules silently.
 
 ---
 
@@ -184,3 +189,11 @@ one name rule that never drifted.
   with a throwing `toString`.
 - kit-leaderboard v0.2.0's re-export is reference-identical to
   `KitNames.validateName`.
+- Worker: full deploy-notes smoke-test sequence re-run against production
+  after the import lands, with particular attention to the name-rejection
+  case (§ below) since that's the behavior actually changing.
+- Worker: a name that passes kit-names' client check and one that the Worker
+  used to accept/reject under its old inline rules — diff the two rule sets
+  before deploying and confirm they're identical, or document the delta if
+  they aren't. (They should be identical; this is the check that catches it
+  if they somehow weren't.)
