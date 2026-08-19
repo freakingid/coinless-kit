@@ -173,9 +173,15 @@ function encodeEnvelope(key, version, value) {
       `kit-storage: set(${describe(key)}, undefined) — undefined is not storable, use remove()`
     );
   }
+  // The VALUE is serialized on its own, then spliced into the envelope. Doing
+  // it the other way round — JSON.stringify({v, d: value}) — hides the failure:
+  // a function or a symbol makes the whole `d` property vanish and yields a
+  // valid-looking `{"v":1}`, which then reads back as corruption on the next
+  // load instead of throwing at the call site where the bug is. `version` is a
+  // validated integer and `json` is valid JSON, so the splice is safe.
   let json;
   try {
-    json = JSON.stringify({ v: version, d: value });
+    json = JSON.stringify(value);
   } catch (error) {
     throw new TypeError(
       `kit-storage: value for key ${describe(key)} is not JSON-representable ` +
@@ -188,7 +194,21 @@ function encodeEnvelope(key, version, value) {
       `(${describe(value)} serializes to nothing)`
     );
   }
-  return json;
+  return `{"v":${version},"d":${json}}`;
+}
+
+// A parsed value is an envelope only if it is a plain object carrying an
+// integer v >= 1 and a d property that is PRESENT — d may legitimately be
+// null, so presence is tested with `in`, never truthiness.
+function isEnvelope(parsed) {
+  return (
+    parsed !== null &&
+    typeof parsed === 'object' &&
+    !Array.isArray(parsed) &&
+    Number.isInteger(parsed.v) &&
+    parsed.v >= 1 &&
+    'd' in parsed
+  );
 }
 
 // --- Storage plumbing -------------------------------------------------------
@@ -240,6 +260,113 @@ function storageKeys(ctx) {
   }
 }
 
+// --- The read algorithm (spec §7.3) ----------------------------------------
+//
+// Seven numbered steps, written out one for one. The ONLY step that writes is
+// step 7's SUCCESSFUL forward migration. Steps 3, 5, 6 and step 7's failure
+// branches all return the fallback and leave the stored bytes exactly as they
+// were, because §2.4 governs: a build that cannot read something is not
+// evidence that the something is worthless.
+
+function writeValue(ctx, prefix, key, version, value) {
+  return writeItem(ctx, prefix + key, encodeEnvelope(key, version, value));
+}
+
+function readValue(ctx, prefix, key, declaration, fallback) {
+  const declared = declaration.version;
+
+  // STEP 1 — the memory shim holds this key → return that value. Done.
+  //
+  // PHASE 3 owes the shim map itself (§5.2): any value that failed to reach
+  // durable storage is retained for the rest of the page session, and it takes
+  // precedence over whatever storage still holds. There is no map yet, so this
+  // step is inert today. It is written out rather than omitted so phase 3 fills
+  // a slot instead of re-deriving where the lookup belongs.
+
+  // STEP 2 — storage unavailable, or no stored value → fallback.
+  // Not a corruption and not an error: nothing is emitted here.
+  const raw = readItem(ctx, prefix + key);
+  if (raw === null) return fallback;
+
+  // STEP 3 — unparseable, or parseable but not a {v, d} envelope → emit
+  // 'corrupt', return the fallback, LEAVE THE BYTES ALONE.
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    ctx.emit('corrupt', { key, reason: 'unparseable' });
+    return fallback;
+  }
+  if (!isEnvelope(parsed)) {
+    ctx.emit('corrupt', { key, reason: 'not_an_envelope' });
+    return fallback;
+  }
+
+  // STEP 4 — stored version matches the declared version → the value.
+  if (parsed.v === declared) return parsed.d;
+
+  // STEP 5 — DOWNGRADE. The stored version is NEWER than this build declares.
+  //
+  // ⛔ Return the fallback, emit 'downgrade', and WRITE NOTHING. This is not an
+  // unfinished branch. It is a player who loaded an older build over newer data
+  // — a cached itch.io build, or a rollback — and it is the only path in this
+  // module capable of destroying data the running build does not understand
+  // yet. It is deliberately inert. §7.3 step 5, §13. Do not "complete" it.
+  if (parsed.v > declared) {
+    ctx.emit('downgrade', { key, stored: parsed.v, declared });
+    return fallback;
+  }
+
+  // STEP 6 — stored version is older and no migrate was declared → emit
+  // 'corrupt', return the fallback, write nothing. The old bytes survive, so a
+  // later build that does declare a migrate can still read them.
+  if (!declaration.migrate) {
+    ctx.emit('corrupt', { key, reason: 'no_migrate' });
+    return fallback;
+  }
+
+  // STEP 7 — stored version is older and migrate was declared.
+  //
+  // migrate receives the ORIGIN version and must handle any version below the
+  // declared one it cares about. There is no chaining: with two or three
+  // lifetime versions per key a chain is more machinery than it is worth, and
+  // harder to test. migrate must be pure and must not call back into the store.
+  let migrated;
+  try {
+    migrated = declaration.migrate(parsed.v, parsed.d);
+  } catch (error) {
+    ctx.emit('error', { key, error });
+    return fallback;
+  }
+
+  // Returning undefined is how migrate says "I cannot handle this version" —
+  // the fallback path takes over and nothing is destroyed.
+  if (migrated === undefined) {
+    ctx.emit('error', {
+      key,
+      error: new Error(
+        `kit-storage: migrate for key ${describe(key)} returned undefined for stored ` +
+        `version ${parsed.v} (declared ${declared}) — falling back, bytes left alone`
+      )
+    });
+    return fallback;
+  }
+
+  // The one and only write on any read path. Best-effort by contract: a failed
+  // write-back is NOT an error and does not change what get() returns —
+  // migration simply runs again on the next load, which is why migrate has to
+  // be idempotent. Wrapped because encoding an unserializable migrate result
+  // must not turn a read into a throw.
+  try {
+    writeValue(ctx, prefix, key, declared, migrated);
+  } catch (error) {
+    ctx.emit('error', { key, error });
+  }
+
+  ctx.emit('migrated', { key, from: parsed.v, to: declared });
+  return migrated;
+}
+
 // --- Enumeration (spec §9) --------------------------------------------------
 //
 // Given the store's prefix P, strip it from every matching storage key:
@@ -277,35 +404,26 @@ function createStore(ctx, prefix) {
       declareKey(ctx, key, spec);
     },
 
-    // PHASE 2 owes get() the complete seven-step read algorithm of §7.3 —
-    // corrupt/downgrade/migrate handling and their events. What is here now is
-    // only steps 2 and 4: absent or unreadable storage returns the fallback,
-    // and an exact version match returns the value. Every other case falls
-    // back WITHOUT writing, which is the safe half of the algorithm but not
-    // yet the specified one.
+    // The fallback is returned as-is, not cloned. There is no read cache: every
+    // get() re-reads storage. §7.3, step by step, lives in readValue().
     get(key, fallback) {
       const declaration = requireDeclared(ctx, key, 'get');
-      const stored = readItem(ctx, prefix + key);
-      if (stored === null) return fallback;
-
-      let parsed;
-      try {
-        parsed = JSON.parse(stored);
-      } catch {
-        return fallback;
-      }
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
-      if (!Number.isInteger(parsed.v) || parsed.v < 1 || !('d' in parsed)) return fallback;
-      if (parsed.v !== declaration.version) return fallback;
-      return parsed.d;
+      return readValue(ctx, prefix, key, declaration, fallback);
     },
 
+    // Versions are per key, never per store and never per call site — the
+    // version written here comes from the declaration, so a caller cannot pass
+    // 2 in one file and forget in another (§7.1).
     set(key, value) {
       const declaration = requireDeclared(ctx, key, 'set');
-      const json = encodeEnvelope(key, declaration.version, value);
-      return writeItem(ctx, prefix + key, json);
+      return writeValue(ctx, prefix, key, declaration.version, value);
     },
 
+    // has() reports whether BYTES are stored at this key, not whether this
+    // build can read them. A corrupt or newer-version value is still data the
+    // player owns (§2.4), and hiding it behind `false` would invite a caller to
+    // overwrite exactly the value step 5 refuses to touch. It never emits and
+    // never writes.
     has(key) {
       requireDeclared(ctx, key, 'has');
       return readItem(ctx, prefix + key) !== null;
