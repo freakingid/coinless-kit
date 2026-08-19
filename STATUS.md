@@ -291,6 +291,139 @@ phases 1–2 (error types, `corrupt` reason strings, event `key` scoping,
 `has()` semantics, `usage()`'s nested-scope inclusion, unserializable-migrate
 handling) plus the `PROFILE_LEGACY_PROBE` inconsistency above.
 
+## kit-profile (`modules/kit-profile/`) — implementation and browser test pass done 2026-08-18; **not tagged**
+
+Built per `docs/kit-profile-spec.md`, phase plan in
+`dev-notes/Implementation-notes-03-kit-profile.md`. Plain ES module, depends
+on `kit-storage` (instance injected, never created here) and `kit-names` (all
+name rules). `VERSION` is `0.1.1` in the module and both docs' `**Version:**`
+headers — no git tag; see CLAUDE.md "Module versioning." (`0.1.1`, not the
+phase-5 starting `0.1.0`: a PATCH bump for the `crypto.randomUUID` fix below —
+no contract change.)
+
+Roster model, all four boot paths (fresh roster, legacy roster import, legacy
+probe, genuinely empty install), `ensurePlayerId` and its four call sites,
+roster operations (`create`/`createAnonymous`/`rename`/`remove`), and the
+two-phase `select()` switch lifecycle were built in phases 1–4. This session
+(phase 5) added `player()` (§9 — already present when this phase started;
+confirmed it matches the spec exactly), built the browser test harnesses, and
+ran the full real-browser verification pass below — the first time the whole
+module has been exercised end to end rather than read against the spec.
+
+### Real-browser test pass (done 2026-08-18)
+
+`demo.html` and `blocked-storage-test.html` built in the module directory,
+same pattern as the other modules — served over real http (a small
+CORS-enabling static server, not `python3 -m http.server`, was needed for the
+blocked-storage fixture; see below), no game code imported.
+
+Full §14 checklist run in real headless Chromium (Playwright — scratch
+install in `/tmp/.../scratchpad/pw-test/`, outside the repo, same precedent as
+the other modules) via a temporary assertion-suite page (not committed,
+deleted after the run):
+
+- **`player_id` mechanics** — all 7 checklist items: `player()` stable within
+  a session and across a simulated reload (a fresh instance over the same
+  storage); backfill fires at boot (minted **before** any other save could
+  run — read directly off `localStorage` immediately after `create()`
+  returns) and again via `select()`; stable across rename, switch-away-and-
+  back, and a *different* profile being removed; `list()` exposes no
+  `playerId` field on any entry; two profiles mint distinct ids.
+- **Boot paths** — all 7 items: empty install (`firstBoot`, nothing written);
+  first `create()` on an empty install lands on `p0` whose scope aliases the
+  root store; pre-profile install mints one `PLAYER 1` profile and leaves the
+  probed blob byte-identical; legacy roster import leaves the legacy key
+  byte-identical while writing the new one; corrupt roster JSON leaves an
+  empty roster and the bytes untouched, no throw; a roster with a duplicate
+  id, a non-object entry, and an empty name loads with just the two good
+  entries; the `seq` floor rule.
+- **Roster ops** — all 8 items: the three distinct `create()` refusal
+  reasons; case/trim-insensitive name collision; `rename()` collision and
+  self-rename; `remove()` refuses the last profile; `remove()` on the current
+  profile auto-selects a replacement and fires the full two-phase lifecycle;
+  removed ids are never reissued; a removed profile's scoped data stays
+  readable via `scope(id)`; `maxProfiles` lower than a stored roster's size
+  loads and persists all of it intact and only blocks new `create()`s.
+- **Switch lifecycle** — all 6 items, including `beforeChange`/`change`
+  seeing the correct side of the switch from *inside the handler* (not just
+  after `select()` returns), a write in each handler landing in the correct
+  profile's scope, `select()` on an unknown/current id firing nothing, and a
+  throwing handler not leaving `activeId` half-moved.
+- **Names** — all 3 items: `Gh0st!` is refused by `create()` but a profile
+  already stored under that name loads intact and is never rewritten;
+  `createAnonymous()` twice returns `name_taken` the second time; an
+  anonymous profile renames like any other.
+
+30/30 assertion groups passed (covering all 31 non-degradation checklist
+items — two switch-lifecycle items share one test since they're two sides of
+the same write). `demo.html` was independently smoke-tested by driving its
+actual buttons in Playwright — create, select, create-anonymous, rename, and
+a switch between two profiles — zero console errors, screenshot confirms
+correct rendering, and the event log correctly shows `beforeChange` before
+`change` on every switch.
+
+**Degradation (blocked storage) — real bug found and fixed, repo-owner
+approved.** Tested inside a real `sandbox="allow-scripts"` iframe with no
+`allow-same-origin` (the same "itch.io / Newgrounds" scenario kit-storage's
+own probe fixture models). `crypto.randomUUID()` — called unconditionally by
+`ensurePlayerId()` and the legacy-probe mint, carried verbatim from production
+per spec §3/§12 — was `undefined` there: an opaque origin is never a secure
+context (confirmed directly: `window.isSecureContext === false`), and
+`Crypto.randomUUID()` is secure-context-only, unlike
+`crypto.getRandomValues()`. Effect: `current()`, `player()`, and `select()`
+threw the first time they reached an unminted profile in that embed type.
+**Not a kit-profile-specific regression** — the identical unguarded call
+exists in the production source this module extracts
+(`docs/orbital-overhaul-player-id-source.md`), so the same throw was already
+present there if Orbital Overhaul has ever been embedded this way; it simply
+hadn't been isolated before.
+
+Fixed with the repo owner's approval: a new `mintPlayerId()` helper falls back
+to building a v4 UUID from `crypto.getRandomValues()` when `crypto.randomUUID`
+is unavailable, used at both call sites. This changes nothing about
+`ensurePlayerId`'s three §12-protected properties (check-then-mint, immediate
+persist, the call sites) — only what generates the id string. `VERSION`
+bumped `0.1.0` → `0.1.1` (PATCH, no contract change). Re-ran both the full
+§14 suite (still 30/30) and `blocked-storage-test.html` (now 13/13, up from
+5/11 before the fix) after the fix — no regressions. The fixture's own
+reporting was also tightened while re-verifying: several "does not throw"
+checks previously logged only on failure, so a fully-green run reported fewer
+checks than a partially-failing one; every `tryCall()` now logs its own
+pass/fail unconditionally, so the count is stable across runs. Stays
+committed as a standing regression check.
+
+### Integration check — the contract the whole module exists to satisfy
+
+`npx wrangler dev --local --var ENVIRONMENT:dev` stood up against
+`services/leaderboard`, migrations applied locally. A temporary page (not
+committed) built `profiles` and then:
+
+```js
+const board = KitLeaderboard.create({ /* ... */, getPlayer: () => profiles.player() });
+```
+
+with **no change to `kit-leaderboard.js`**. `beginRun()` + `submit()`
+returned `{status:'submitted'}` for a freshly created profile; the profile was
+then renamed mid-session with **no change to the `board` instance**, and a
+second `beginRun()` + `submit()` also returned `{status:'submitted'}`.
+Verified past the client's own report by reading local D1 directly
+(`wrangler d1 execute coinless-scores --local`): both rows carry the same
+`player_id`; `display_name` is `INTEGTEST` on the first row and `RENAMED2` on
+the second — confirming the rename really was picked up by the next
+`submit()`, not just that both calls happened to succeed. `player()` with no
+current profile returns `{playerId: null, displayName: ''}` as specced.
+Nothing written by this test touched production — local dev D1 only, and no
+game code or Orbital Overhaul repo was touched (out of scope for this
+session).
+
+### Judgment calls and findings, now recorded
+
+See `DECISIONS.md`, 2026-08-18 (Phase 5) entry, for: the `crypto.randomUUID`
+finding and proposed fix, in full; and §14 item 6's checklist wording, which
+(like kit-storage's still-open `PROFILE_LEGACY_PROBE` item) is inconsistent
+with the spec's own §3.1 and was tested against the evident intent instead of
+the literal text.
+
 ## Open items for the repo owner
 
 1. `statsFields` for `orbital-overhaul` was trimmed to `wave_reached,
@@ -327,3 +460,34 @@ handling) plus the `PROFILE_LEGACY_PROBE` inconsistency above.
 8. kit-profile is next per the phase notes, but that's explicitly a separate
    session — it needs to be written against kit-storage's shipped API, not a
    remembered one, and should wait until the tag question above is settled.
+9. **kit-profile's implementation and real-browser test pass are done; it has
+   no git tag.** That's expected, not deferred — module versioning moved to
+   `VERSION`/`**Version:**` (see 2026-08-19 `DECISIONS.md` entry and
+   CLAUDE.md), and kit-profile's is confirmed `0.1.1` in the module and both
+   docs.
+10. **Bug found and fixed, with your approval:** `crypto.randomUUID()` threw
+    in a sandboxed embed with no `allow-same-origin` (itch.io/Newgrounds-style
+    — the exact scenario kit-storage's own blocked-storage fixture models),
+    breaking `current()`/`player()`/`select()` the first time any of them
+    reached an unminted profile there. Inherited verbatim from the production
+    code kit-profile extracts, so the same throw most likely already exists in
+    Orbital Overhaul today — worth checking there too. Fixed via a
+    `mintPlayerId()` helper that falls back to `crypto.getRandomValues()`
+    when `randomUUID` is absent, touching nothing `ensurePlayerId`'s §12
+    protections cover. Re-verified: full §14 suite still 30/30,
+    `blocked-storage-test.html` now 13/13 (was 5/11). `VERSION` bumped to
+    `0.1.1` for this fix. See `DECISIONS.md` for the change itself.
+11. §14 item 6's checklist wording ("assert storage still holds zero
+    `playerId`s" after `list()`) was inconsistent with the spec's own §3.1,
+    which requires boot itself to mint the active profile's id — so after any
+    non-empty-roster boot, exactly one profile already has one before `list()`
+    is ever called. **Fixed, with your approval** — `kit-profile-spec.md` §14
+    now says to assert exactly one `playerId` after boot and that `list()`
+    adds no more. kit-storage's still-open `PROFILE_LEGACY_PROBE` item (open
+    item 7 above) got the same kind of finding but is still awaiting a
+    decision — unrelated to this one beyond the pattern.
+12. kit-profile is ready for the step the phase notes originally pointed to:
+    integrating into Orbital Overhaul. That's a separate session in a separate
+    repo with its own notes file, and this session did not touch it, per
+    instruction. Worth checking there whether the `crypto.randomUUID` failure
+    mode (open item 10) has ever actually manifested in production.

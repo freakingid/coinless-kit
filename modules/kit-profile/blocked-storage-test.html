@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>kit-profile blocked-storage probe</title></head>
+<body>
+<p>Loaded inside a <code>sandbox="allow-scripts"</code> iframe with no
+<code>allow-same-origin</code>, so <code>window.localStorage</code> throws —
+the same real failure mode kit-storage's own probe fixture exercises (spec
+&sect;14 "Degradation"). Runs kit-profile on top of a genuinely blocked
+kit-storage instance and posts the result to the parent window.</p>
+<pre id="out"></pre>
+<script type="module">
+  import * as KitStorage from '../kit-storage/kit-storage.js';
+  import * as KitProfile from './kit-profile.js';
+
+  const out = { checks: [], allPassed: true };
+  function check(name, pass, detail) {
+    out.checks.push({ name, pass, detail });
+    if (!pass) out.allPassed = false;
+  }
+  // Every call below is wrapped individually — an opaque sandboxed origin has
+  // no secure context (see STATUS.md / DECISIONS.md: crypto.randomUUID() is
+  // undefined here, which is exactly what this fixture caught before the fix
+  // that shipped alongside it), and a suite that let that propagate would
+  // abort before reporting anything useful. tryCall() always logs its own
+  // named "does not throw" check — pass when fn() returns, fail with the
+  // thrown message when it doesn't — so the check count stays the same
+  // whether everything passes or something regresses.
+  function tryCall(name, fn) {
+    try {
+      const value = fn();
+      check(name, true);
+      return { ok: true, value };
+    } catch (e) {
+      check(name, false, 'threw: ' + e.message);
+      return { ok: false, value: undefined };
+    }
+  }
+
+  const storage = KitStorage.create({ gameId: 'blocked-profile-demo' });
+  check('storage.available === false (sanity: this fixture really is blocked)', storage.available === false);
+
+  const createResult = tryCall('KitProfile.create() does not throw', () => KitProfile.create({ storage }));
+  const profiles = createResult.value;
+
+  let created = null, currentAfterCreate = null, playerAfterCreate = null;
+  if (profiles) {
+    const createProfileResult = tryCall("profiles.create('GHOST') does not throw", () => profiles.create('GHOST'));
+    created = createProfileResult.value || null;
+    check("profiles.create('GHOST') returns ok:true (roster op itself never touches crypto)",
+      !!(created && created.ok === true), JSON.stringify(created));
+
+    if (created && created.ok) {
+      // select() is required for a freshly created profile to become current
+      // (create() alone does not activate it — spec §5.4 / client API "Boot").
+      // This is the call that reaches ensurePlayerId() and, in this exact
+      // opaque-origin context, crypto.randomUUID() / its getRandomValues()
+      // fallback.
+      tryCall('profiles.select() does not throw', () => profiles.select(created.profile.id));
+
+      const currentResult = tryCall('profiles.current() does not throw', () => profiles.current());
+      currentAfterCreate = currentResult.value || null;
+      const playerResult = tryCall('profiles.player() does not throw', () => profiles.player());
+      playerAfterCreate = playerResult.value || null;
+
+      check('player() returns a usable (non-null) playerId', !!(playerAfterCreate && playerAfterCreate.playerId));
+      check('current().playerId matches player().playerId', !!(
+        currentAfterCreate && playerAfterCreate &&
+        currentAfterCreate.playerId === playerAfterCreate.playerId
+      ));
+
+      // "ensurePlayerId's immediate save returning false does not prevent the
+      // id being used for the rest of the session" — call player() again and
+      // confirm the SAME id comes back rather than a fresh one.
+      const againResult = tryCall('a second player() call does not throw', () => profiles.player());
+      const playerAgain = againResult.value || null;
+      check("a second player() call returns the SAME id (the failed save didn't drop it)",
+        !!(playerAgain && playerAfterCreate && playerAgain.playerId === playerAfterCreate.playerId));
+    }
+  }
+
+  // A fresh instance over the same (still-blocked) storage stands in for a
+  // reload: nothing durable exists, so nothing should survive.
+  const storage2 = KitStorage.create({ gameId: 'blocked-profile-demo' });
+  const create2Result = tryCall('a fresh instance does not throw', () => KitProfile.create({ storage: storage2 }));
+  const profiles2 = create2Result.value;
+  if (profiles2) {
+    check('a fresh instance (stand-in for reload) sees firstBoot again — nothing survived',
+      profiles2.firstBoot === true && profiles2.current() === null);
+  }
+
+  // Diagnostic, not a pass/fail check: names the root cause directly so a
+  // failing run above is traceable without re-deriving it.
+  out.diagnostic = {
+    isSecureContext: window.isSecureContext,
+    hasCryptoRandomUUID: typeof crypto.randomUUID === 'function'
+  };
+
+  document.getElementById('out').textContent = JSON.stringify(out, null, 2);
+  parent.postMessage({ source: 'kit-profile-blocked-test', result: out }, '*');
+</script>
+</body>
+</html>

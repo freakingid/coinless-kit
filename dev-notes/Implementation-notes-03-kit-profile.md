@@ -249,7 +249,7 @@ and confirm a submit succeeds with NO modification to kit-leaderboard. Also
 confirm a rename mid-session is picked up by the next submit() without
 recreating the leaderboard instance.
 
-Then: tag kit-profile v0.1.0. Update STATUS.md with a kit-profile section in
+Then: confirm kit-profile's VERSION is 0.1.0 in both places it lives (the module and its docs' **Version:** header) — ⛔ not a git tag, see CLAUDE.md "Module versioning". Update STATUS.md with a kit-profile section in
 the established format. Add DECISIONS.md entries for judgment calls the spec
 did not resolve. If anything on section 12's list looked wrong during
 implementation, raise it rather than working around it.

@@ -2,7 +2,7 @@
 
 **Module:** `kit-profile`
 **Part of:** coinless-kit
-**Tag:** v0.1.0
+**Version:** v0.1.1
 **Depends on:** `kit-storage` (instance injected), `kit-names`
 **Talks to:** nothing — local only, no server component, no deploy notes doc
 **Scope:** local player identity. `player_id`, display name, the profile roster.
@@ -359,7 +359,7 @@ It's why zeroing `game.wave` is safe — no live gameplay ever reads it there.
 
 `create()` and `rename()` validate through `KitNames.validateName`. kit-profile
 holds no charset, no length, and no normalization of its own. See `kit-names.md`
-for why, and for the kit-leaderboard v0.2.0 re-tag this implies.
+for why, and for the kit-leaderboard v0.2.0 version bump this implies.
 
 `nameTaken(name, exceptId)` compares **normalized** names case-insensitively,
 with `exceptId` so `rename()` can ignore the profile it's renaming — carried
@@ -536,8 +536,11 @@ several of these are about persistence timing.
   first with an id; switch to the second; it gets one.
 - `playerId` is stable across rename, across a switch away and back, and
   across a *different* profile being removed.
-- `list()` never mints — boot a roster of 3 idless profiles, call `list()`,
-  assert storage still holds zero `playerId`s.
+- `list()` never mints — boot a roster of 3 idless profiles. Boot itself
+  mints one, per §3.1's first call site ("boot, for the profile that ends up
+  active"), so assert storage holds exactly the one `playerId` boot minted
+  immediately afterward; then call `list()` and assert that count is
+  unchanged — `list()` itself must add none.
 - Two profiles have distinct `playerId`s.
 
 **Boot paths**

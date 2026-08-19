@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>kit-profile demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  section { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }
+  label { display: block; margin: 0.5rem 0 0.2rem; font-size: 0.85rem; color: #555; }
+  input, select { padding: 0.3rem; font-size: 0.9rem; width: 100%; box-sizing: border-box; }
+  button { margin-top: 0.75rem; padding: 0.4rem 0.9rem; cursor: pointer; margin-right: 0.4rem; }
+  pre { background: #f5f5f5; padding: 0.6rem; overflow-x: auto; font-size: 0.8rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }
+  .row { display: flex; gap: 0.75rem; }
+  .row > div { flex: 1; }
+  .current { font-weight: bold; color: #0a6b0a; }
+  .badge { font-size: 0.75rem; color: #b45309; }
+  #log { max-height: 160px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<h1>kit-profile demo</h1>
+<p>Exercises profile creation, switching, and a <code>player()</code> read
+(kit-leaderboard's <code>getPlayer()</code> shape). Backed by a real
+<code>kit-storage</code> instance under <code>gameId: "kit-profile-demo"</code>.
+No game code.</p>
+
+<section>
+  <h2>Boot state</h2>
+  <pre id="bootState"></pre>
+</section>
+
+<section>
+  <h2>Roster</h2>
+  <table id="rosterTable">
+    <thead><tr><th>id</th><th>name</th><th>created</th><th></th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <div class="row">
+    <div>
+      <label for="newName">New profile name</label>
+      <input id="newName" value="GHOST">
+    </div>
+  </div>
+  <button id="createBtn">Create</button>
+  <button id="createAnonBtn">Create anonymous</button>
+  <pre id="createResult"></pre>
+</section>
+
+<section>
+  <h2>Current profile / player()</h2>
+  <pre id="currentResult"></pre>
+  <button id="refreshBtn">Refresh current() / player()</button>
+</section>
+
+<section>
+  <h2>Rename current profile</h2>
+  <div class="row">
+    <div>
+      <label for="renameName">New name</label>
+      <input id="renameName" value="GHOST2">
+    </div>
+  </div>
+  <p class="badge" id="renameNotice"></p>
+  <button id="renameBtn">Rename current</button>
+  <pre id="renameResult"></pre>
+</section>
+
+<section>
+  <h2>Event log</h2>
+  <pre id="log"></pre>
+</section>
+
+<script type="module">
+  import * as KitStorage from '../kit-storage/kit-storage.js';
+  import * as KitProfile from './kit-profile.js';
+
+  const logEl = document.getElementById('log');
+  function log(name, detail) {
+    const line = `${new Date().toISOString().slice(11, 19)}  ${name}  ${JSON.stringify(detail)}`;
+    logEl.textContent = line + '\n' + logEl.textContent;
+  }
+
+  const storage = KitStorage.create({
+    gameId: 'kit-profile-demo',
+    onEvent: (name, detail) => log('storage:' + name, detail)
+  });
+
+  const profiles = KitProfile.create({
+    storage,
+    onEvent: (name, detail) => log('profile:' + name, detail)
+  });
+
+  document.getElementById('renameNotice').textContent = KitProfile.NAME_CHANGE_NOTICE;
+
+  function renderBoot() {
+    document.getElementById('bootState').textContent = JSON.stringify(
+      { firstBoot: profiles.firstBoot },
+      null, 2
+    );
+  }
+
+  function renderRoster() {
+    const tbody = document.querySelector('#rosterTable tbody');
+    tbody.innerHTML = '';
+    const current = profiles.current();
+    for (const p of profiles.list()) {
+      const tr = document.createElement('tr');
+      const isCurrent = current && current.id === p.id;
+      tr.innerHTML = `
+        <td class="${isCurrent ? 'current' : ''}">${p.id}${isCurrent ? ' (current)' : ''}</td>
+        <td>${p.name}</td>
+        <td>${p.created}</td>
+        <td><button data-select="${p.id}">Select</button></td>
+        <td><button data-remove="${p.id}">Remove</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+    if (profiles.list().length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5">no profiles — firstBoot picker would show here</td></tr>';
+    }
+  }
+
+  function renderCurrent() {
+    document.getElementById('currentResult').textContent = JSON.stringify(
+      { current: profiles.current(), player: profiles.player() },
+      null, 2
+    );
+  }
+
+  function renderAll() {
+    renderBoot();
+    renderRoster();
+    renderCurrent();
+  }
+
+  document.querySelector('#rosterTable tbody').addEventListener('click', (e) => {
+    if (e.target.dataset.select) {
+      profiles.select(e.target.dataset.select);
+      renderAll();
+    } else if (e.target.dataset.remove) {
+      profiles.remove(e.target.dataset.remove);
+      renderAll();
+    }
+  });
+
+  document.getElementById('createBtn').addEventListener('click', () => {
+    const result = profiles.create(document.getElementById('newName').value);
+    document.getElementById('createResult').textContent = JSON.stringify(result, null, 2);
+    renderAll();
+  });
+
+  document.getElementById('createAnonBtn').addEventListener('click', () => {
+    const result = profiles.createAnonymous();
+    document.getElementById('createResult').textContent = JSON.stringify(result, null, 2);
+    renderAll();
+  });
+
+  document.getElementById('refreshBtn').addEventListener('click', renderCurrent);
+
+  document.getElementById('renameBtn').addEventListener('click', () => {
+    const current = profiles.current();
+    if (!current) {
+      document.getElementById('renameResult').textContent = 'no current profile to rename';
+      return;
+    }
+    const result = profiles.rename(current.id, document.getElementById('renameName').value);
+    document.getElementById('renameResult').textContent = JSON.stringify(result, null, 2);
+    renderAll();
+  });
+
+  renderAll();
+</script>
+
+</body>
+</html>

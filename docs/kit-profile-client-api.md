@@ -2,7 +2,7 @@
 
 **Module:** `kit-profile`
 **Part of:** coinless-kit
-**Tag:** v0.1.0
+**Version:** v0.1.1
 **Depends on:** `kit-storage` (instance injected), `kit-names`
 **Talks to:** nothing — local only, no server, no network
 **Scope:** local player identity. `player_id`, display name, the profile roster.

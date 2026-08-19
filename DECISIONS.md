@@ -556,3 +556,136 @@ their actual contracts changed here. kit-profile's docs (`kit-profile-spec.md`,
 left alone — it has no module source yet, and retrofitting a doc header with
 no corresponding `VERSION` export would leave the two out of sync again. It
 picks up the new convention whole when it's actually built.
+
+## 2026-08-18 — kit-profile Phase 5 (browser test pass and integration)
+
+**kit-profile picks up the `VERSION`/`**Version:**` convention now that it's
+actually built** (per the entry above): `VERSION = '0.1.0'` in the module,
+`**Version:** v0.1.0` in both docs' headers. No git tag — confirmed the
+module and both docs already agreed on this before this phase's work started.
+
+**Bug found, not fixed: `crypto.randomUUID()` is undefined in the exact
+embedding scenario kit-storage's own blocked-storage probe is built to
+model.** `ensurePlayerId()` — and `probePreProfileInstall()` — call
+`crypto.randomUUID()` unconditionally, carried verbatim from production per
+spec §3/§12. Confirmed directly in a real `sandbox="allow-scripts"` iframe
+with no `allow-same-origin` (kit-storage's own documented "the real itch.io /
+Newgrounds failure mode"): `window.isSecureContext` is `false` there — an
+opaque origin is never "potentially trustworthy" — and `Crypto.randomUUID()`
+is spec'd `[SecureContext]`-only, while `crypto.getRandomValues()` carries no
+such restriction and stays available.
+
+Effect: `current()`, `player()`, and `select()` all throw an uncaught
+`TypeError` the first time any of them reaches a profile without a
+`playerId` yet, in that embed type. Worse, if a pre-profile install is
+detected during boot, `probePreProfileInstall()` hits the same call directly
+inside `create()`'s own boot sequence — so `create()` itself throws,
+contradicting its documented "runs this sequence synchronously and never
+throws" contract (spec §5).
+
+This is **not a kit-profile-specific regression** — the identical unguarded
+call exists in the production `Profiles.ensurePlayerId` / `activate()` /
+`init()` this module extracts verbatim
+(`docs/orbital-overhaul-player-id-source.md` §2), so if Orbital Overhaul has
+ever been embedded this way, the same throw already happens there. It simply
+hasn't been isolated and confirmed before now — kit-profile's phase 5 is the
+first time this exact code path has been run inside a real opaque-origin
+sandbox.
+
+**Not fixed in this session.** The fix touches `ensurePlayerId`, which spec
+§3/§12 marks ⛔ "carry forward verbatim... do not restructure into a lazy
+getter, a constructor-time mint, or a migration pass." A minimal fix — fall
+back to building a v4 UUID from `crypto.getRandomValues()` when
+`crypto.randomUUID` is unavailable — would not touch any of the three
+load-bearing properties §12 protects (check-then-mint, immediate persist, the
+call sites); it only changes what generates the UUID *string*, e.g.:
+
+```js
+function mintPlayerId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const hex = [...b].map((x) => x.toString(16).padStart(2, '0'));
+  return `${hex.slice(0,4).join('')}-${hex.slice(4,6).join('')}-${hex.slice(6,8).join('')}-${hex.slice(8,10).join('')}-${hex.slice(10,16).join('')}`;
+}
+```
+
+But it is still a change to spec-protected code, so — per CLAUDE.md's
+instruction to stop and ask rather than invent a resolution past a ⛔ line —
+it's raised here rather than applied. `modules/kit-profile/blocked-storage-
+test.html` documents the failure precisely: every call is wrapped
+individually so the suite reports which specific checks fail instead of the
+whole page crashing, and it will catch a regression or confirm a fix either
+way once the repo owner decides.
+
+**§14 item 6's literal wording is inconsistent with §3.1 — same pattern as
+kit-storage's still-open `PROFILE_LEGACY_PROBE` finding.** The checklist item
+reads: "list() never mints — boot a roster of 3 idless profiles, call
+list(), assert storage still holds zero playerIds." That can't be literally
+true for a non-empty roster: §3.1 requires `boot()` itself to call
+`ensurePlayerId` on whichever profile ends up active — "boot, for the
+profile that ends up active" is explicitly the first of the four call sites.
+So by the time `list()` is ever reachable after a non-empty-roster boot,
+exactly one profile already has a `playerId`, not zero. Tested the evident
+intent instead: assert exactly one `playerId` exists immediately after boot
+(the one boot itself minted), and that calling `list()` adds no more —
+which is what the browser test actually checks. Flagged here rather than
+silently resolved, matching the treatment of kit-storage's still-open
+`PROFILE_LEGACY_PROBE` inconsistency (2026-08-18 kit-storage entry above);
+needs the repo owner's call on the checklist wording. Doesn't affect module
+behavior, only the checklist text.
+
+**Integration verified against local D1 directly, not just the client's
+reported status.** `submit()` returning `{status:'submitted'}` twice doesn't
+by itself prove a mid-session rename was picked up — both calls could
+"succeed" while silently still using the old name if `getPlayer` were somehow
+cached. Read the `scores` table directly via `wrangler d1 execute
+coinless-scores --local` after both submits: identical `player_id` on both
+rows, `display_name` reading `INTEGTEST` on the first row and `RENAMED2` on
+the second, with the *same* `board` instance used for both submits and zero
+change to `kit-leaderboard.js`. Confirms spec §9's claim precisely rather
+than trusting the client-side response alone.
+
+**Static server for the blocked-storage fixture.** `python3 -m http.server`
+doesn't send CORS headers, and a sandboxed iframe with an opaque (`null`)
+origin needs `Access-Control-Allow-Origin` to load ES modules cross-origin —
+without it every `import` inside the fixture fails with a CORS error before
+any of kit-profile's own code runs. Reused the small `Access-Control-Allow-
+Origin: *` static server written for this exact purpose during kit-storage's
+own phase 5 (found on disk from that session's scratch workspace) rather than
+re-deriving it.
+
+**Both findings above resolved same-day, with the repo owner's explicit
+approval on each.**
+
+1. **`crypto.randomUUID` fix applied as proposed.** Added `mintPlayerId()`
+   (small helper, defined alongside the module's other small helpers, above
+   `makeState`): returns `crypto.randomUUID()` when it exists, else builds a
+   v4 UUID from `crypto.getRandomValues(new Uint8Array(16))` per RFC 4122
+   (set the version and variant bits, hex-format with dashes). Both call
+   sites — `ensurePlayerId` and the legacy-probe mint in
+   `probePreProfileInstall` — now call `mintPlayerId()` instead of
+   `crypto.randomUUID()` directly. Nothing else in either function changed:
+   `ensurePlayerId` is still exactly check-then-mint, immediate persist, same
+   four call sites — §12's protection is about that structure, not about
+   which function produces the string.
+
+   `VERSION` bumped `0.1.0` → `0.1.1` per CLAUDE.md's versioning rules (PATCH:
+   bug fix, no contract change).
+
+   Re-verified after the change, not just re-read: the full §14 browser suite
+   (30/30, unchanged) and `blocked-storage-test.html` both re-run.
+   `blocked-storage-test.html` went from 5/11 passing to 13/13 — the count
+   changed because its own reporting was tightened at the same time (several
+   "does not throw" checks were previously logged only on failure via
+   `tryCall`'s internal `check()` call, so a fully-green run under-reported
+   relative to a partially-failing one; `tryCall` now logs unconditionally).
+   No regressions in either suite.
+
+2. **§14 item 6's wording fixed in `kit-profile-spec.md` directly** (not just
+   noted here): the assertion now reads "storage holds exactly the one
+   `playerId` boot minted" instead of "zero," with the `list()`-adds-none
+   check kept as the actual point of the item. `kit-storage`'s parallel
+   `PROFILE_LEGACY_PROBE` inconsistency is a separate, still-open item — this
+   entry doesn't resolve that one, only kit-profile's own.
