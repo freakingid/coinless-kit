@@ -144,11 +144,11 @@ so it fires sporadically rather than never — but it provides no usable cap.
 3. Both phases are now complete. Next step, per the deploy notes' rollout
    order, is integrating `kit-leaderboard` into Orbital Overhaul — a
    separate repo, separate session.
-4. **No `v0.2.0` tag exists yet.** `git tag -l` shows only `v0.1.0` (at
-   `cb51451`, which predates kit-names and still contains the self-contained
-   kit-leaderboard — so any game pinned there is unaffected by today's
-   change). The kit-names and consolidation work is committed to `main` but
-   untagged, so a game cannot pin it yet.
+4. **Tagged `v0.2.0`** (at `fa2d983`, commit `1d0f080` — the kit-names
+   extraction plus the name-rule consolidation). A game can pin this work.
+   `v0.1.0` (at `cb51451`) predates kit-names and still contains the
+   self-contained kit-leaderboard, so any game pinned there is unaffected by
+   the stricter name rules.
 5. Orbital Overhaul's `Profiles.cleanName` is still the fourth copy of the
    name rules and still diverges (trims and slices to 12, enforces nothing
    else). It lives in the game repo, out of scope here, but it is the
