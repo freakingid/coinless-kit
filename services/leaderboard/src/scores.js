@@ -1,5 +1,5 @@
 import { GAMES } from './registry.js';
-import { normalizeName, isProfane, isUuidV4, checkBounds, checkUnknownStatsKeys } from './validate.js';
+import { validateName, isProfane, isUuidV4, checkBounds, checkUnknownStatsKeys } from './validate.js';
 import { json, errorJson } from './index.js';
 
 const PUBLIC_ID_ALPHABET = '23456789abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -114,7 +114,7 @@ export async function handleSubmit(request, env, corsHeaders) {
     return errorJson(400, 'INVALID_PAYLOAD', 'run_id and player_id must be UUID v4', corsHeaders);
   }
 
-  const nameResult = normalizeName(body.display_name);
+  const nameResult = validateName(body.display_name);
   if (!nameResult.ok) {
     return errorJson(400, 'INVALID_NAME', 'Name must be 1-12 characters, A-Z 0-9 space - _', corsHeaders);
   }

@@ -267,6 +267,82 @@ simplification.
 
 **Update, 2026-08-18 — Worker duplicate closed.** The above was originally left open: services/leaderboard/src/validate.js held a third inline copy of the same rules, and importing kit-names into it would touch deployed Worker behavior, requiring a redeploy and a full smoke-test re-run. Decided to do it now rather than defer: the site isn't publicized yet and carries no production traffic, which is exactly the window where that cost is cheapest. The Worker's inline copy is deleted outright rather than kept as an unused fallback — a fallback that only runs when an import fails is untested code, and a broken import should fail the deploy loudly rather than silently serve stale rules. wrangler deploy already bundles Worker source with esbuild, so the import is ordinary, not new infrastructure. Requires: redeploy, full smoke-test sequence re-run from the deploy notes, with extra attention to the name-rejection case since that's the behavior actually changing.
 
+## 2026-08-18 — Worker imports kit-names; name rules consolidated and deployed
+
+**The three copies were not identical, and the Worker's was the buggy one.**
+The pre-change diff required before the import turned up a real difference, not
+a cosmetic one: `services/leaderboard/src/validate.js` ran its charset check
+*after* `.toUpperCase()`, the exact ordering `docs/kit-names.md` §2.1 marks ⛔.
+`modules/kit-leaderboard/kit-leaderboard.js` had the same flaw. Only kit-names
+checked pre-uppercase.
+
+Confirmed against **production before deploying**, not reasoned about:
+submitting `display_name: "ß"` returned `200` and stored the row as `SS`
+(`public_id E2N7xYqm`). So the Worker was accepting names the documented rules
+exclude, and silently rewriting them. Same class covers `ﬁ` → `FI`.
+
+Per the repo owner, adopted kit-names' ordering — this **tightens** what the
+board accepts. Verified post-deploy: `ß` and `ﬁ` now return `400 INVALID_NAME`.
+Everything rejected by the old rules stays rejected (`Gh0st!`, over-length,
+empty, `ÉCLAIR`, non-string), everything accepted stays accepted (`TESTER`,
+`A_B-C 1`, 12-char, `'  ghost '` → `GHOST`), and profanity remains server-owned
+(`SHIT`, leet `5H1T` → `NAME_REJECTED`).
+
+Existing D1 rows were deliberately **not** audited or rewritten, per the repo
+owner. A stored `SS` stays `SS`; the rules govern new submissions only.
+
+**Reason-string rename is invisible externally.** kit-names returns `empty` /
+`too_long` where the Worker returned `invalid_type` / `invalid_length`. Safe:
+`scores.js` only ever read `.ok`, collapsing every failure into one generic
+`400 INVALID_NAME`, and the worker spec's documented error enum never contained
+the granular strings. No client depended on them.
+
+**`normalizeName` renamed to `validateName` at the call site** rather than
+re-exported under an alias. An alias would have preserved a name that no longer
+describes the function (it validates and returns a result object; it does not
+normalize in place), and left two names for one thing — the same drift this
+change exists to remove.
+
+**kit-leaderboard's copy deleted in the same pass.** The phase brief described
+this as already done, but commit `517ab60` had only added `modules/kit-names/`;
+the client module still held its own inline rules and its doc still read
+`Tag: v0.1.0` / `Depends on: nothing`. Now a true re-export (`export {
+validateName, NAME_CHANGE_NOTICE } from '../kit-names/kit-names.js'`), so it is
+reference-identical to `KitNames.validateName` as the doc's checklist requires —
+verified by `===`, not by inspection.
+
+**No fallback copy anywhere.** Per `docs/kit-names.md` §1.2: a fallback that
+only runs when an import fails is untested code. Confirmed `wrangler deploy`'s
+esbuild resolves the cross-directory import by reading the emitted bundle — the
+charset test appears before `.toUpperCase()` in the deployed output, and the old
+`[A-Z0-9 \-_]` regex appears nowhere in it.
+
+**Rate limiting re-tested; the 2026-08-14 gap still stands, with one nuance.**
+A deliberate controlled burst of 6 rapid submits from one IP for one game
+(`SUBMIT_LIMITER` is 3/60s) returned `200` six times — no 429. So the known gap
+is unchanged and nothing caps submission rate in production.
+
+The nuance worth recording: during an earlier unthrottled run, exactly **one**
+of ~16 rapid submits did return `429 RATE_LIMITED`, and across both bursts it
+fired once in ~22 requests. So the binding is not a clean no-op the way the
+2026-08-14 entry's "never once rate limited" implies — it appears to fire
+sporadically rather than not at all. Practically identical (no usable cap), but
+worth knowing, because it means a future test seeing a lone 429 should not
+conclude the limiter started working.
+
+Side effect worth remembering when reading smoke-test output: the limiter runs
+at `scores.js:84`, *before* name validation at line 117. A 429 therefore
+short-circuits the name check entirely — during this run one name case returned
+429 and looked like a failure when it was simply untested. Re-run it after the
+window clears rather than reading it as a rejection.
+
+**Cost baseline** (deploy notes' post-smoke-test step), top-players board query,
+`window=all`, `limit=25`, 9-row table: `rows_read: 59`, `rows_written: 0`,
+`duration 0.56ms`. Against the free plan's 5M reads/day that is ~85k board
+reads/day at current table size. Worth re-measuring once the table is large —
+the query scans the window before ranking, so reads scale with rows in window,
+not with `limit`.
+
 ## 2026-08-17 — kit-profile design (extraction from Orbital Overhaul)
 
 Treated as an extraction, not a fresh design. `ensurePlayerId`, the defensive

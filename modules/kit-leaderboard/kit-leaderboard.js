@@ -1,8 +1,12 @@
-// kit-leaderboard — client module. Plain ES module, no build step, no dependencies.
+// kit-leaderboard — client module. Plain ES module, no build step.
 // Contract: docs/kit-leaderboard-client-api.md. Talks to the Worker in
 // services/leaderboard/. Never touches the DOM, never renders anything.
+// Depends on: kit-names (display-name rules only).
 
-const NAME_CHARS_RE = /^[A-Z0-9 \-_]*$/;
+// Re-exported, not wrapped, so KitLeaderboard.validateName is reference-
+// identical to KitNames.validateName — see docs/kit-names.md §1.1. Every call
+// site documented in kit-leaderboard-client-api.md keeps working unmodified.
+export { validateName, NAME_CHANGE_NOTICE } from '../kit-names/kit-names.js';
 
 const RETRY_DELAYS_MS = [2000, 8000, 30000];
 const QUEUE_CAP = 20;
@@ -17,29 +21,6 @@ const PERMANENT_REJECT_CODES = new Set([
   'ORIGIN_NOT_ALLOWED',
   'TURNSTILE_FAILED'
 ]);
-
-export const NAME_CHANGE_NOTICE =
-  "Scores you've already posted will keep the name you used at the time.\n" +
-  'Only new scores will show your new name.';
-
-export function validateName(raw) {
-  if (typeof raw !== 'string') {
-    return { ok: false, reason: 'invalid_type', normalized: null };
-  }
-
-  const collapsed = raw.trim().replace(/\s+/g, ' ');
-  const upper = collapsed.toUpperCase();
-
-  if (!NAME_CHARS_RE.test(upper)) {
-    return { ok: false, reason: 'illegal_character', normalized: null };
-  }
-
-  if (upper.length < 1 || upper.length > 12) {
-    return { ok: false, reason: 'invalid_length', normalized: null };
-  }
-
-  return { ok: true, reason: null, normalized: upper };
-}
 
 function detectLocalStorage() {
   try {

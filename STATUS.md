@@ -1,6 +1,6 @@
 # STATUS
 
-Last updated: 2026-08-14
+Last updated: 2026-08-18
 
 ## Phase 1 — Worker (`services/leaderboard/`) — deployed and smoke tested in production
 
@@ -80,6 +80,59 @@ Nothing in this test run touched production D1 — the CORS-blocked attempt
 never reached the server, and the successful submit went to local dev D1
 only.
 
+## Phase 3 — `kit-names` extracted (`modules/kit-names/`) — done 2026-08-18
+
+`kit-names.js` — `validateName`, `NAME_CHANGE_NOTICE`, `MAX_NAME_LENGTH`. Plain
+ES module, no dependencies. Contract: `docs/kit-names.md`.
+
+## Phase 4 — name rules consolidated; Worker redeployed 2026-08-18
+
+**There is now exactly one implementation of the display-name rules in this
+repo, in `modules/kit-names/kit-names.js`. Neither the Worker nor
+kit-leaderboard keeps an independent or fallback copy.**
+
+- `services/leaderboard/src/validate.js` re-exports `validateName` from
+  kit-names; its inline `normalizeName` is deleted. `src/scores.js` updated to
+  the new name.
+- `modules/kit-leaderboard/kit-leaderboard.js` re-exports `validateName` and
+  `NAME_CHANGE_NOTICE` from kit-names (a real re-export — verified
+  reference-identical with `===`, not merely equivalent). Its inline copy is
+  deleted. Doc header now reads `Tag: v0.2.0` / `Depends on: kit-names`.
+
+**Behavior changed, deliberately — the board is now stricter.** All three
+former copies were *not* identical: both the Worker's and kit-leaderboard's ran
+the charset check *after* `.toUpperCase()`, which is the ⛔ ordering bug
+`docs/kit-names.md` §2.1 exists to prevent. Confirmed against production before
+deploying: `display_name: "ß"` returned `200` and was stored as `SS`. After the
+deploy it returns `400 INVALID_NAME`. Same for `ﬁ` (was `FI`). Nothing else
+about what the board accepts changed. Existing D1 rows were deliberately not
+audited or rewritten — see `DECISIONS.md`.
+
+`npx wrangler deploy` succeeded (version `7b59f920-69bb-4e95-a2f4-7b4ca1f73a39`).
+esbuild resolves the cross-directory import into `services/` cleanly; verified
+by reading the emitted bundle, not just by the deploy exiting 0.
+
+Full deploy-notes smoke-test sequence re-run against **production**, all
+passing: health, origin rejection, valid submit, idempotent duplicate (same
+`public_id`), bounds flagging (`rate_implausible`), name rejection,
+unknown-stats-key flagging, top-players dedup (one player, three runs at 1000 /
+900000 / 5 → appears once at 900000), and board reads across `24h`/`4h`/`year`/
+`all`. `year` confirmed rolling-365-day, not calendar. Name rejection was
+tested hardest since it's the behavior that changed: 16 cases including both
+§2.1 regressions, the unchanged accept/reject sets, and server-owned profanity.
+
+Test rows (`game_version = '0.0.0-test'`, 15 of them) deleted from production.
+The 3 real rows (`PAUL` ×2, `BUDDY`) verified intact afterward.
+
+**Cost baseline:** top-players board query `window=all&limit=25` on a 9-row
+table — `rows_read: 59`, `rows_written: 0`, `0.56ms`. Reads scale with rows in
+the window, not with `limit`; re-measure when the table grows.
+
+**Rate limiting is still not enforced in production** (unchanged known gap — see
+below and `DECISIONS.md`). A deliberate 6-submit burst against a 3/60s limit
+returned 200 six times. One stray 429 did appear earlier in ~22 rapid submits,
+so it fires sporadically rather than never — but it provides no usable cap.
+
 ## Open items for the repo owner
 
 1. `statsFields` for `orbital-overhaul` was trimmed to `wave_reached,
@@ -91,3 +144,13 @@ only.
 3. Both phases are now complete. Next step, per the deploy notes' rollout
    order, is integrating `kit-leaderboard` into Orbital Overhaul — a
    separate repo, separate session.
+4. **No `v0.2.0` tag exists yet.** `git tag -l` shows only `v0.1.0` (at
+   `cb51451`, which predates kit-names and still contains the self-contained
+   kit-leaderboard — so any game pinned there is unaffected by today's
+   change). The kit-names and consolidation work is committed to `main` but
+   untagged, so a game cannot pin it yet.
+5. Orbital Overhaul's `Profiles.cleanName` is still the fourth copy of the
+   name rules and still diverges (trims and slices to 12, enforces nothing
+   else). It lives in the game repo, out of scope here, but it is the
+   remaining half of the drift `kit-names` was created to end — a profile
+   stored as `Gh0st!` still produces a permanently-rejected submission.

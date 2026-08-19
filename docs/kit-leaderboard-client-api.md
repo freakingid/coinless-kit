@@ -2,8 +2,8 @@
 
 **Module:** `kit-leaderboard`
 **Part of:** coinless-kit
-**Tag:## v0.1.0
-**Depends on:** nothing (no other kit module, no third-party library)
+**Tag:** v0.2.0
+**Depends on:** `kit-names` (display-name rules only; no third-party library)
 **Talks to:** `scores.coinlessgames.com` (see the Worker spec)
 **Scope:** scores only. Achievements are a separate future module.
 
@@ -128,7 +128,11 @@ KitLeaderboard.validateName('  ghost ')
 // -> { ok: true, reason: null, normalized: 'GHOST' }
 ```
 
-Rules mirror the server: 1–12 chars after normalization, `A-Z 0-9 space - _`, uppercased, internal whitespace collapsed, no Unicode. The client check is **UX only** — the server is authoritative and may still return `NAME_REJECTED` for profanity, which the client filter deliberately does not duplicate (keeping the wordlist out of shipped game source is the point).
+**The rules themselves live in `kit-names` — see `docs/kit-names.md` §2.** As of v0.2.0 this module does not implement them; `validateName` and `NAME_CHANGE_NOTICE` are re-exported from `kit-names` and are reference-identical to `KitNames.validateName` / `KitNames.NAME_CHANGE_NOTICE`. The Worker imports the same function, so client and server cannot drift. Call sites below are unchanged from v0.1.0.
+
+`reason` is one of `'empty'`, `'illegal_character'`, `'too_long'`, or `null`.
+
+The client check is **UX only** — the server is authoritative and may still return `NAME_REJECTED` for profanity, which the client filter deliberately does not duplicate (keeping the wordlist out of shipped game source is the point).
 
 ### Required: the rename warning
 
@@ -142,7 +146,7 @@ KitLeaderboard.NAME_CHANGE_NOTICE
 
 Show this in the rename flow, before confirmation, with the option to cancel.
 
-This notice is a *leaderboard* fact but a *profile UI* concern — the first real test of where the seams between kit modules fall. In v1 it lives here as a constant the game renders. When `kit-menu` / profile management is extracted, that module should import the constant rather than re-type the sentence.
+This notice is a *leaderboard* fact but a *profile UI* concern — the first real test of where the seams between kit modules fall. v0.1.0 anticipated that a future profile module should import the constant rather than re-type it; as of v0.2.0 the constant lives in `kit-names` and both modules import it from there, so a profile module never has to point at this network module to get it.
 
 ---
 

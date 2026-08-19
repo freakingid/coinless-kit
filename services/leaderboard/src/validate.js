@@ -1,7 +1,11 @@
-// Name normalization, profanity filter, UUID check, and the bounds check
+// Name validation, profanity filter, UUID check, and the bounds check
 // (the whole anti-cheat story — see docs/kit-leaderboard-worker-spec.md §4-6).
 
-const NAME_CHARS_RE = /^[A-Z0-9 \-_]*$/;
+// Display-name rules live in kit-names and are imported, not reimplemented —
+// see docs/kit-names.md §1.2. There is deliberately no inline fallback copy:
+// if this import breaks, the deploy should fail loudly rather than silently
+// serve stale rules. wrangler deploy's esbuild bundling resolves this.
+export { validateName } from '../../../modules/kit-names/kit-names.js';
 
 const UUID_V4_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -16,25 +20,6 @@ const PROFANITY_WORDLIST = [
   'FUCK', 'SHIT', 'BITCH', 'CUNT', 'ASSHOLE', 'NIGGER', 'NIGGA',
   'FAGGOT', 'RETARD', 'WHORE', 'RAPE', 'DICK', 'PUSSY', 'COCK'
 ];
-
-export function normalizeName(raw) {
-  if (typeof raw !== 'string') {
-    return { ok: false, reason: 'invalid_type', normalized: null };
-  }
-
-  const collapsed = raw.trim().replace(/\s+/g, ' ');
-  const upper = collapsed.toUpperCase();
-
-  if (!NAME_CHARS_RE.test(upper)) {
-    return { ok: false, reason: 'illegal_character', normalized: null };
-  }
-
-  if (upper.length < 1 || upper.length > 12) {
-    return { ok: false, reason: 'invalid_length', normalized: null };
-  }
-
-  return { ok: true, reason: null, normalized: upper };
-}
 
 // Expects an already-normalized (uppercase) name. Server-side only —
 // keeping the wordlist out of shipped game source is the point.
