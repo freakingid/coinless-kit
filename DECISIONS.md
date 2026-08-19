@@ -520,3 +520,39 @@ similarly-sized value can pass even when storage isn't actually full — the
 by shrinking the fill chunk size down to 1 byte until even that fails
 (guaranteeing zero slack), and by making the value under test for the quota
 `set()` strictly larger than what's already stored at that key.
+
+## 2026-08-19 — Module versioning decoupled from git tags
+
+**The tag-collision surfaced in the prior kit-storage session (git tags are
+repo-wide, so a second `v0.1.0` for kit-storage would have collided with
+kit-leaderboard's existing one) turned out to be evidence of a design
+mistake, not just a naming clash.** The repo owner had been using git tags to
+version individual modules, but a game shipping a fix to `kit-names` alone
+shouldn't force a version bump on `kit-storage`, and git tags can't express
+that — one tag names one commit, i.e. the whole repo, not one module.
+
+**Decision: each module's version now lives in its own source file
+(`export const VERSION = 'X.Y.Z'`) and its doc's `**Version:**` header
+(renamed from `**Tag:**`, which is what implied a git tag in the first
+place). The two must always match.** Ordinary independent semver per module.
+`Depends on:` lines now carry a floor, e.g. `` `kit-names` >= 0.1.0 ``, so a
+future bump to a dependency can be checked against what depends on it. Full
+rationale and the bump rules are in `CLAUDE.md` under "Module versioning" —
+that section, not this entry, is the one future sessions should read for the
+mechanics.
+
+**Git tags are no longer part of the versioning story at all.** They remain
+repo-wide bookmarks the repo owner creates by hand whenever they choose,
+fully decoupled from any module's version number. A session should not
+create one without being explicitly asked to, even if an older
+implementation-notes doc says "tag module X vY" — that phrasing now means
+"bump `VERSION`."
+
+**Retrofitted onto the three existing modules in the same pass:** kit-names
+(`0.1.0`), kit-leaderboard (`0.2.0`), kit-storage (`0.1.0`) — version numbers
+carried over unchanged from their current doc headers, since nothing about
+their actual contracts changed here. kit-profile's docs (`kit-profile-spec.md`,
+`kit-profile-client-api.md`) still say `**Tag:** v0.1.0` and were deliberately
+left alone — it has no module source yet, and retrofitting a doc header with
+no corresponding `VERSION` export would leave the two out of sync again. It
+picks up the new convention whole when it's actually built.

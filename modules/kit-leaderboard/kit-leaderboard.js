@@ -3,6 +3,8 @@
 // services/leaderboard/. Never touches the DOM, never renders anything.
 // Depends on: kit-names (display-name rules only).
 
+export const VERSION = '0.2.0';
+
 // Re-exported, not wrapped, so KitLeaderboard.validateName is reference-
 // identical to KitNames.validateName — see docs/kit-names.md §1.1. Every call
 // site documented in kit-leaderboard-client-api.md keeps working unmodified.

@@ -2,7 +2,7 @@
 
 **Module:** `kit-names`
 **Part of:** coinless-kit
-**Tag:** v0.1.0
+**Version:** v0.1.0
 **Depends on:** nothing
 **Talks to:** nothing — pure functions and constants, no storage, no network
 **Scope:** display-name rules shared between kit-profile and kit-leaderboard.

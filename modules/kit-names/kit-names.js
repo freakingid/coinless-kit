@@ -3,6 +3,8 @@
 // DOM, no network. Shared display-name rules for kit-profile and
 // kit-leaderboard.
 
+export const VERSION = '0.1.0';
+
 const ALLOWED_CHARS_RE = /^[A-Za-z0-9 _-]*$/;
 
 export const MAX_NAME_LENGTH = 12;

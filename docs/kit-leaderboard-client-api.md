@@ -2,8 +2,8 @@
 
 **Module:** `kit-leaderboard`
 **Part of:** coinless-kit
-**Tag:** v0.2.0
-**Depends on:** `kit-names` (display-name rules only; no third-party library)
+**Version:** v0.2.0
+**Depends on:** `kit-names` >= 0.1.0 (display-name rules only; no third-party library)
 **Talks to:** `scores.coinlessgames.com` (see the Worker spec)
 **Scope:** scores only. Achievements are a separate future module.
 

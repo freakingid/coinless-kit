@@ -8,6 +8,8 @@
 // (an undeclared key, an illegal identifier, an unserializable value) is an
 // EXCEPTION, thrown at the call site.
 
+export const VERSION = '0.1.0';
+
 // --- Identifiers (spec §3.2) -------------------------------------------------
 //
 // '.' is the keyspace segment separator (§3.1) and is therefore absent from

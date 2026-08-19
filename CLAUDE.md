@@ -30,6 +30,31 @@ one without raising it first.
 See `STATUS.md` for what's currently built/deployed and `DECISIONS.md` for
 implementation choices made where the docs were silent or ambiguous.
 
+## Module versioning
+
+Each module's version is independent of the others and lives in two places
+that must always agree: the module's own JS file (`export const VERSION =
+'X.Y.Z'`) and its doc's `**Version:**` header line. A mismatch between them
+is a bug, same as any other doc/code disagreement.
+
+Ordinary semver, decided per module: PATCH for a bug fix with no contract
+change, MINOR for an additive/backward-compatible change, MAJOR for a
+breaking change to the doc'd contract. Bump it in the same commit as the
+change that motivates it, and record the *why* in `DECISIONS.md` as usual.
+
+A module's `Depends on:` header line names a minimum version of anything it
+depends on, e.g. `` `kit-names` >= 0.1.0 `` — so a future bump to the
+dependency can be checked against what actually needs it.
+
+⛔ **Git tags are not how modules are versioned**, and an instruction that
+says "tag module X vY" (an older doc may still phrase it that way) means
+"bump `VERSION`," not "create a git tag." Tags are repository-wide, so one
+tag can't represent "kit-names changed but kit-storage didn't" — that
+mismatch is exactly what this section replaced. Tags are the repo owner's
+own bookmarks now, created by hand whenever they choose; nothing in this
+repo's workflow depends on a tag's name or existence, and a session should
+not create one without being explicitly asked to.
+
 ## Working on the leaderboard service
 
     cd services/leaderboard

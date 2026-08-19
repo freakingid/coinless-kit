@@ -2,7 +2,7 @@
 
 **Module:** `kit-storage`
 **Part of:** coinless-kit
-**Tag:** v0.1.0
+**Version:** v0.1.0
 **Depends on:** nothing (no other kit module, no third-party library)
 **Talks to:** nothing — local only, no server, no network
 **Scope:** persistence primitives. Namespacing, versioning, graceful degradation.
