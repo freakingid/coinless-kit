@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>kit-storage demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  section { border: 1px solid #ddd; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }
+  label { display: block; margin: 0.5rem 0 0.2rem; font-size: 0.85rem; color: #555; }
+  input, select { padding: 0.3rem; font-size: 0.9rem; width: 100%; box-sizing: border-box; }
+  button { margin: 0.5rem 0.4rem 0 0; padding: 0.4rem 0.9rem; cursor: pointer; }
+  pre { background: #f5f5f5; padding: 0.6rem; overflow-x: auto; font-size: 0.8rem; max-height: 220px; }
+  .row { display: flex; gap: 0.75rem; }
+  .row > div { flex: 1; }
+  #log { background: #111; color: #9f9; font-family: monospace; font-size: 0.78rem; padding: 0.6rem; height: 160px; overflow-y: auto; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 10px; font-size: 0.78rem; }
+  .ok { background: #dcfce7; color: #166534; }
+  .no { background: #fee2e2; color: #991b1b; }
+</style>
+</head>
+<body>
+
+<h1>kit-storage demo</h1>
+<p>Exercises <code>create()</code>, declared keys with versioning/migration,
+<code>scope()</code>, enumeration, quota/availability signals, and
+<code>raw</code>. Local only &mdash; no network, no game code. Contract:
+<code>docs/kit-storage-client-api.md</code>.</p>
+
+<section>
+  <h2>Store</h2>
+  <p>available: <span id="available" class="badge"></span></p>
+  <button id="recreateBtn">create() a fresh store (gameId: demo-game)</button>
+  <button id="declareConflictBtn">Try a conflicting declare('settings', ...)</button>
+</section>
+
+<section>
+  <h2>settings (version 2, has migrate)</h2>
+  <div class="row">
+    <div>
+      <label for="scopeId">Scope id (blank = root)</label>
+      <input id="scopeId" value="p1">
+    </div>
+  </div>
+  <div class="row">
+    <div>
+      <label for="settingsValue">Value to set() (JSON)</label>
+      <input id="settingsValue" value='{"volume":0.8,"captions":true}'>
+    </div>
+  </div>
+  <button id="setBtn">set()</button>
+  <button id="getBtn">get()</button>
+  <button id="hasBtn">has()</button>
+  <button id="removeBtn">remove()</button>
+  <button id="writeV1Btn">hand-write stored v1 (no migrate field)</button>
+  <button id="writeV99Btn">hand-write stored v99 (downgrade case)</button>
+  <button id="writeCorruptBtn">hand-write corrupt bytes</button>
+  <pre id="settingsResult"></pre>
+</section>
+
+<section>
+  <h2>Enumeration</h2>
+  <button id="keysBtn">keys()</button>
+  <button id="scopesBtn">scopes()</button>
+  <button id="usageBtn">usage()</button>
+  <button id="clearBtn">clear()</button>
+  <button id="clearDeepBtn">clear({deep:true})</button>
+  <pre id="enumResult"></pre>
+</section>
+
+<section>
+  <h2>raw</h2>
+  <div class="row">
+    <div>
+      <label for="rawKey">raw key</label>
+      <input id="rawKey" value="afd_settings_v1">
+    </div>
+    <div>
+      <label for="rawValue">raw value (string)</label>
+      <input id="rawValue" value="legacy-bytes">
+    </div>
+  </div>
+  <button id="rawSetBtn">raw.set()</button>
+  <button id="rawGetBtn">raw.get()</button>
+  <button id="rawHasBtn">raw.has()</button>
+  <button id="rawRemoveBtn">raw.remove()</button>
+  <pre id="rawResult"></pre>
+</section>
+
+<section>
+  <h2>Programmer-error cases (should throw)</h2>
+  <button id="undeclaredBtn">get() undeclared key</button>
+  <button id="illegalGameIdBtn">create() illegal gameId</button>
+  <button id="dotKeyBtn">get() key containing '.'</button>
+  <button id="undefinedBtn">set(key, undefined)</button>
+  <button id="circularBtn">set() circular value</button>
+  <pre id="errorResult"></pre>
+</section>
+
+<section>
+  <h2>Quota</h2>
+  <p>Fills this origin's localStorage, then does one more set() to show the
+  false return / quota event / memory-shim readback described in the doc.</p>
+  <button id="fillQuotaBtn">Fill storage then set()</button>
+  <pre id="quotaResult"></pre>
+</section>
+
+<section>
+  <h2>Blocked storage (sandboxed iframe, no allow-same-origin)</h2>
+  <button id="loadBlockedBtn">Load blocked-storage test</button>
+  <iframe id="blockedFrame" sandbox="allow-scripts" style="width:100%;height:120px;border:1px solid #ccc;" src="about:blank"></iframe>
+  <pre id="blockedResult"></pre>
+</section>
+
+<section>
+  <h2>Event log</h2>
+  <pre id="log"></pre>
+</section>
+
+<script type="module">
+  import * as KitStorage from './kit-storage.js';
+
+  const logEl = document.getElementById('log');
+  function log(...args) {
+    logEl.textContent += args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  let store = null;
+
+  function createStore() {
+    store = KitStorage.create({
+      gameId: 'demo-game',
+      keys: {
+        profiles: { version: 1 },
+        settings: {
+          version: 2,
+          migrate(fromVersion, data) {
+            if (fromVersion === 1) return { ...data, captions: false };
+            return undefined;
+          }
+        }
+      },
+      onEvent: (name, detail) => log('[event]', name, detail)
+    });
+    document.getElementById('available').textContent = store.available;
+    document.getElementById('available').className = 'badge ' + (store.available ? 'ok' : 'no');
+    log('created store, available =', store.available);
+  }
+  createStore();
+
+  document.getElementById('recreateBtn').addEventListener('click', createStore);
+
+  document.getElementById('declareConflictBtn').addEventListener('click', () => {
+    try {
+      store.declare('settings', { version: 3 });
+      document.getElementById('settingsResult').textContent = 'no throw (unexpected)';
+    } catch (e) {
+      document.getElementById('settingsResult').textContent = 'threw: ' + e.message;
+    }
+  });
+
+  function target() {
+    const id = document.getElementById('scopeId').value.trim();
+    return id ? store.scope(id) : store;
+  }
+
+  document.getElementById('setBtn').addEventListener('click', () => {
+    const value = JSON.parse(document.getElementById('settingsValue').value);
+    const ok = target().set('settings', value);
+    document.getElementById('settingsResult').textContent = 'set() -> ' + ok;
+  });
+
+  document.getElementById('getBtn').addEventListener('click', () => {
+    const value = target().get('settings', 'FALLBACK');
+    document.getElementById('settingsResult').textContent = 'get() -> ' + JSON.stringify(value);
+  });
+
+  document.getElementById('hasBtn').addEventListener('click', () => {
+    document.getElementById('settingsResult').textContent = 'has() -> ' + target().has('settings');
+  });
+
+  document.getElementById('removeBtn').addEventListener('click', () => {
+    document.getElementById('settingsResult').textContent = 'remove() -> ' + target().remove('settings');
+  });
+
+  document.getElementById('writeV1Btn').addEventListener('click', () => {
+    const id = document.getElementById('scopeId').value.trim();
+    const prefix = id ? `coinless.demo-game.${id}.` : 'coinless.demo-game.';
+    window.localStorage.setItem(prefix + 'settings', '{"v":1,"d":{"volume":0.5}}');
+    document.getElementById('settingsResult').textContent = 'hand-wrote v1 envelope';
+  });
+
+  document.getElementById('writeV99Btn').addEventListener('click', () => {
+    const id = document.getElementById('scopeId').value.trim();
+    const prefix = id ? `coinless.demo-game.${id}.` : 'coinless.demo-game.';
+    window.localStorage.setItem(prefix + 'settings', '{"v":99,"d":{"future":true}}');
+    document.getElementById('settingsResult').textContent = 'hand-wrote v99 envelope (downgrade case)';
+  });
+
+  document.getElementById('writeCorruptBtn').addEventListener('click', () => {
+    const id = document.getElementById('scopeId').value.trim();
+    const prefix = id ? `coinless.demo-game.${id}.` : 'coinless.demo-game.';
+    window.localStorage.setItem(prefix + 'settings', 'not json{{{');
+    document.getElementById('settingsResult').textContent = 'hand-wrote corrupt bytes';
+  });
+
+  document.getElementById('keysBtn').addEventListener('click', () => {
+    document.getElementById('enumResult').textContent = 'keys() -> ' + JSON.stringify(target().keys());
+  });
+  document.getElementById('scopesBtn').addEventListener('click', () => {
+    document.getElementById('enumResult').textContent = 'scopes() -> ' + JSON.stringify(target().scopes());
+  });
+  document.getElementById('usageBtn').addEventListener('click', () => {
+    document.getElementById('enumResult').textContent = 'usage() -> ' + JSON.stringify(target().usage());
+  });
+  document.getElementById('clearBtn').addEventListener('click', () => {
+    document.getElementById('enumResult').textContent = 'clear() -> removed ' + target().clear();
+  });
+  document.getElementById('clearDeepBtn').addEventListener('click', () => {
+    document.getElementById('enumResult').textContent = 'clear({deep:true}) -> removed ' + target().clear({ deep: true });
+  });
+
+  document.getElementById('rawSetBtn').addEventListener('click', () => {
+    const k = document.getElementById('rawKey').value;
+    const v = document.getElementById('rawValue').value;
+    document.getElementById('rawResult').textContent = 'raw.set() -> ' + store.raw.set(k, v);
+  });
+  document.getElementById('rawGetBtn').addEventListener('click', () => {
+    const k = document.getElementById('rawKey').value;
+    document.getElementById('rawResult').textContent = 'raw.get() -> ' + JSON.stringify(store.raw.get(k));
+  });
+  document.getElementById('rawHasBtn').addEventListener('click', () => {
+    const k = document.getElementById('rawKey').value;
+    document.getElementById('rawResult').textContent = 'raw.has() -> ' + store.raw.has(k);
+  });
+  document.getElementById('rawRemoveBtn').addEventListener('click', () => {
+    const k = document.getElementById('rawKey').value;
+    document.getElementById('rawResult').textContent = 'raw.remove() -> ' + store.raw.remove(k);
+  });
+
+  document.getElementById('undeclaredBtn').addEventListener('click', () => {
+    try { store.get('nope_not_declared'); document.getElementById('errorResult').textContent = 'no throw (unexpected)'; }
+    catch (e) { document.getElementById('errorResult').textContent = 'threw: ' + e.message; }
+  });
+  document.getElementById('illegalGameIdBtn').addEventListener('click', () => {
+    try { KitStorage.create({ gameId: 'ab' }); document.getElementById('errorResult').textContent = 'no throw (unexpected)'; }
+    catch (e) { document.getElementById('errorResult').textContent = 'threw: ' + e.message; }
+  });
+  document.getElementById('dotKeyBtn').addEventListener('click', () => {
+    try { store.get('a.b'); document.getElementById('errorResult').textContent = 'no throw (unexpected)'; }
+    catch (e) { document.getElementById('errorResult').textContent = 'threw: ' + e.message; }
+  });
+  document.getElementById('undefinedBtn').addEventListener('click', () => {
+    try { store.set('settings', undefined); document.getElementById('errorResult').textContent = 'no throw (unexpected)'; }
+    catch (e) { document.getElementById('errorResult').textContent = 'threw: ' + e.message; }
+  });
+  document.getElementById('circularBtn').addEventListener('click', () => {
+    const obj = {}; obj.self = obj;
+    try { store.set('settings', obj); document.getElementById('errorResult').textContent = 'no throw (unexpected)'; }
+    catch (e) { document.getElementById('errorResult').textContent = 'threw: ' + e.message; }
+  });
+
+  document.getElementById('fillQuotaBtn').addEventListener('click', () => {
+    const chunk = 'x'.repeat(1024 * 1024);
+    let i = 0;
+    try {
+      while (true) { window.localStorage.setItem('__fill_' + i, chunk); i += 1; }
+    } catch {
+      // storage is now full
+    }
+    const before = window.localStorage.getItem('coinless.demo-game.settings');
+    const ok = store.set('settings', { volume: 0.01, quotaTest: true });
+    const after = window.localStorage.getItem('coinless.demo-game.settings');
+    const readback = store.get('settings', 'FALLBACK');
+    document.getElementById('quotaResult').textContent =
+      `filled ${i} MB-chunks\nset() -> ${ok}\nstorage before === after: ${before === after}\nget() -> ${JSON.stringify(readback)}`;
+    // Clean up the filler keys so the rest of the demo still works this session.
+    for (let j = 0; j < i; j += 1) { try { window.localStorage.removeItem('__fill_' + j); } catch {} }
+  });
+
+  document.getElementById('loadBlockedBtn').addEventListener('click', () => {
+    const frame = document.getElementById('blockedFrame');
+    window.addEventListener('message', (e) => {
+      if (e.data && e.data.source === 'kit-storage-blocked-test') {
+        document.getElementById('blockedResult').textContent = JSON.stringify(e.data.result, null, 2);
+      }
+    }, { once: true });
+    frame.src = './blocked-storage-test.html';
+  });
+</script>
+
+</body>
+</html>

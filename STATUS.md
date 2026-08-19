@@ -133,11 +133,11 @@ below and `DECISIONS.md`). A deliberate 6-submit burst against a 3/60s limit
 returned 200 six times. One stray 429 did appear earlier in ~22 rapid submits,
 so it fires sporadically rather than never — but it provides no usable cap.
 
-## kit-storage (`modules/kit-storage/`) — phases 1–2 of 5 done
+## kit-storage (`modules/kit-storage/`) — done, tagged `v0.1.0` 2026-08-18
 
 Built per `docs/kit-storage-spec.md`, phase plan in
 `docs/Implementation-notes-02-kit-storage.md`. Plain ES module, named export
-`create`, **no dependencies — it does not import kit-names**. Not yet tagged.
+`create`, **no dependencies — it does not import kit-names**.
 
 ### Phase 1 — skeleton, keyspace, availability (done 2026-08-18)
 
@@ -174,33 +174,122 @@ migration write-back. **Every non-writing case asserts on a snapshot of the
 whole of `localStorage` before and after, not on the return value** — a
 return-value-only test passes even if the module silently rewrote storage.
 
-### Still owed by later phases — marked `PHASE n` in the source
+### Phase 3 — memory shim and quota (done 2026-08-18)
 
-- **Phase 3:** the memory shim (§5.2) and quota classification (§8). Read step
-  1 is written out but inert; failed writes currently keep nothing.
-- **Phase 4:** `scope()`, enumeration and `raw` are implemented per §6/§9/§3.4
-  but only exercised so far by the never-throw-for-undeclared-keys tests. They
-  still need the memory-shim sweep in `clear()`/`remove()` and their own tests.
-- **Phase 5:** real-browser pass, `demo.html`, blocked-storage and quota
-  verification, tag `v0.1.0`.
+- Memory shim (§5.2): any write that fails to reach durable storage is
+  retained in `ctx.memory`, keyed by full storage key so it's shared across
+  `scope()` the same way the probe result, `onEvent` handler and declaration
+  table already are. A successful write clears the entry first, so a durable
+  value is never shadowed by a stale in-memory copy. `remove()` clears both.
+- Quota classification (§8): `setItem` failures are distinguished by whether
+  `ctx.ls` was absent to begin with (no event — already covered by the
+  one-time `unavailable` at `create()`) versus `setItem` itself throwing,
+  which is always classified `quota` — browsers disagree on
+  `QuotaExceededError` vs. `NS_ERROR_DOM_QUOTA_REACHED` vs. numeric codes 22 /
+  1014, and the spec says to treat any unrecognized write failure as quota
+  too, so kit-storage doesn't try to out-guess the browser.
+- No eviction anywhere in the write path — `set()` returning `false` plus the
+  `quota` event is the entire contract (§2.2).
 
-### Judgment calls the spec did not settle — fold into `DECISIONS.md` at phase 5
+### Phase 4 — scopes, enumeration, raw (done 2026-08-18)
 
-- **Error types.** `TypeError` for malformed identifiers, declarations and
-  values (§3.2 says `TypeError` explicitly); plain `Error` for state conflicts
-  — an undeclared key and a conflicting `declare()`.
-- **`corrupt` reasons** are `unparseable`, `not_an_envelope`, `no_migrate`.
-  §11 names the event, not the strings.
-- **Event `key` is the logical key**, not the full storage key — so a scoped
-  store's events do not say which scope. Revisit if a debug overlay needs it.
-- **`has()` reports whether bytes exist**, not whether this build can read
-  them. A corrupt or newer-version value is still the player's data (§2.4), and
-  a `false` there would invite a caller to overwrite exactly what step 5
-  refuses to touch.
-- **`usage()` counts the whole prefix including nested scopes** (§8 says "this
-  store's prefix"), unlike `keys()`/`clear()`, which are own-level by default.
-- **A migrate result that cannot be serialized** emits `error` and is treated
-  as a failed write-back — it never turns a `get()` into a throw.
+- `scope(id)` returns the same interface over a longer prefix, sharing the
+  parent's probe result, `onEvent` handler and declaration table (§6).
+- `keys()` / `scopes()` / `clear()` / `clear({deep:true})` via the prefix walk
+  and the no-`.`-in-identifiers segment-count rule (§9). All four also sweep
+  matching entries out of the memory shim, including keys that never reached
+  durable storage at all (`underPrefixMemory`, needed because a never-durable
+  key has nothing in `localStorage` for the storage-side walk to find).
+- `raw` (§3.4): unprefixed, unversioned, un-enveloped strings, same shim
+  rules as managed keys, exempt from `clear()`, invisible to `keys()`.
+
+### Phase 5 — real-browser test pass (done 2026-08-18)
+
+`demo.html` and `blocked-storage-test.html` built in the module directory,
+same single-file/`<script type="module">` pattern as kit-leaderboard's —
+served over real http, no game code imported. `blocked-storage-test.html` is
+a standalone fixture (not just a demo helper): loaded in a
+`sandbox="allow-scripts"` iframe with no `allow-same-origin`, it runs its own
+assertions and posts the result to its parent, so it's reusable by both the
+manual demo and automated verification.
+
+The full §15 checklist was run in real headless Chromium (Playwright —
+scratch npm install + `playwright install chromium` in
+`/tmp/.../scratchpad/pw-test/`, outside the repo, same as the kit-leaderboard
+precedent) via a temporary assertion-suite page (not committed — deleted
+after the run, same rationale as kit-leaderboard's Playwright scripts never
+entering the repo):
+
+- **Happy path** — all 6 JSON-representable types round-trip; absent-key and
+  post-`remove()` fallback; two scopes independent under the same key; nested
+  scope round-trip.
+- **Namespacing** — two `gameId`s don't see each other's keys; `clear()` on
+  either leaves a hand-written `coinless.lb.<gameId>.v1` key byte-identical;
+  `keys()` excludes nested scopes, shallow `clear()` leaves them, `clear({deep:
+  true})` removes them; `scopes()` lists each child once, not per key.
+- **Versioning** — all 5 §15 cases, **every non-writing case asserted on the
+  raw `localStorage.getItem()` bytes before/after**, not just the return
+  value: same-version (byte-identical), lower+migrate (migrated value,
+  `migrated` fired, re-read confirms the version 2 write-back), lower+no-migrate
+  (fallback, `corrupt`/`no_migrate`, bytes untouched), higher/⛔downgrade
+  (fallback, `downgrade`, bytes untouched), migrate-returns-`undefined`
+  (fallback, `error`, bytes untouched), migrate-throws (fallback, `error`,
+  bytes untouched).
+- **Corruption** — non-JSON and valid-JSON-non-envelope, both fallback +
+  `corrupt` + bytes untouched.
+- **Degradation — blocked storage.** Verified inside the real sandboxed
+  iframe (not a mock): `create()` doesn't throw, `available === false`,
+  `unavailable` fires once with the actual browser
+  `SecurityError: Failed to read the 'localStorage' property from 'Window':
+  The document is sandboxed and lacks the 'allow-same-origin' flag.` — this
+  is the literal exception the spec's §5.1 probe is written to catch. Every
+  method (`set`/`get`/`has`/`remove`/`keys`/`usage`/`raw`) still works; a
+  second `create()` in the same blocked context (standing in for a fresh page
+  load, since the memory shim is a fresh `Map` per instance either way) does
+  not see the first instance's shimmed value.
+- **Degradation — quota.** Filled storage in shrinking chunk sizes (1MB down
+  to 1 byte) until even a 1-byte write failed, then `set()` a value **larger**
+  than the existing durable one (same-or-smaller overwrites take zero
+  additional bytes and would spuriously succeed even at genuine capacity —
+  caught by the first pass of this test). Confirmed: `false` returned, `quota`
+  fired, `get()` returns the new value from memory, a direct storage read
+  still holds the old bytes. Freed the filler keys and confirmed a subsequent
+  successful `set()` clears the memory shim, verified by reading storage
+  directly afterward (what would survive a reload) rather than through
+  `get()`.
+- **Programmer error** — all 9 checklist cases throw: undeclared key on each
+  of get/set/has/remove, illegal `gameId` (short and bad-charset), illegal
+  `scopeId`, `.` in a key, `set(key, undefined)`, a circular value, and a
+  conflicting `declare()`. Identical redeclaration confirmed as a no-op.
+- **Raw** — round-trip, `has()`/`remove()`, invisible to `keys()`, survives
+  `clear()`. See the flagged spec inconsistency below for the last bullet.
+
+80/80 assertions passed. `demo.html` was also independently smoke-tested by
+driving its actual buttons (not just the assertion suite) in Playwright —
+set/get, `keys()`/`usage()`, `raw`, a hand-written v99 envelope demonstrating
+the downgrade fallback, an undeclared-key throw, and the blocked-storage
+iframe button — zero console or page errors, screenshot confirms correct
+rendering.
+
+**Spec inconsistency flagged, not silently resolved.** §15's "Raw" block's
+last bullet reads `raw.has() on all of PROFILE_LEGACY_PROBE in a blocked
+context returns false without throwing`. `PROFILE_LEGACY_PROBE` is not
+defined anywhere in `kit-storage-spec.md` or the module — the only related
+name is `PROFILE_LEGACY = "p0"` (§3.4, §6.1), and that's explicitly a
+**kit-profile** concept kit-storage stays ignorant of per §2.3. Tested the
+evident intent instead — `raw.has()` on the three named legacy keys
+(`afd_settings_v1`, `afd_achievements_v2`, `afd_profiles_v1`) inside the
+blocked-storage context returns `false` without throwing, which passed — but
+that's a substitution, not literal fulfillment of the checklist line as
+written. Repo owner should confirm the intended fix to the checklist wording;
+see `DECISIONS.md`.
+
+### Judgment calls the spec left open, now recorded
+
+See `DECISIONS.md`, 2026-08-18 entry, for the items deferred here during
+phases 1–2 (error types, `corrupt` reason strings, event `key` scoping,
+`has()` semantics, `usage()`'s nested-scope inclusion, unserializable-migrate
+handling) plus the `PROFILE_LEGACY_PROBE` inconsistency above.
 
 ## Open items for the repo owner
 
@@ -223,3 +312,12 @@ return-value-only test passes even if the module silently rewrote storage.
    else). It lives in the game repo, out of scope here, but it is the
    remaining half of the drift `kit-names` was created to end — a profile
    stored as `Gh0st!` still produces a permanently-rejected submission.
+6. **kit-storage is done and tagged `v0.1.0`.** Full §15 checklist passed in a
+   real browser (80/80). One thing needs your call: §15's "Raw" block
+   references an undefined identifier, `PROFILE_LEGACY_PROBE` — see the
+   kit-storage section above and the 2026-08-18 `DECISIONS.md` entry. Doesn't
+   block anything; kit-storage's own behavior is unaffected either way, it's
+   the spec doc's checklist wording that needs a decision.
+7. kit-profile is next per the phase notes, but that's explicitly a separate
+   session — it needs to be written against this shipped `v0.1.0` API, not a
+   remembered one.

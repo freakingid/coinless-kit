@@ -423,3 +423,82 @@ tempting one-liner. Monotonic `seq` remains the guarantee that a recycled id
 can't inherit a dead profile's data, and not-clearing is what it protects. A
 "delete my data" feature, if ever wanted, is a separate confirmed action — not a
 side effect of removing a roster row.
+
+## 2026-08-18 — kit-storage phases 3–5: memory shim, quota, scopes/enumeration/raw, browser test pass, `v0.1.0` tagged
+
+Judgment calls from phases 1–2 that the spec left unstated, deferred to be
+recorded here per the phase plan (`docs/Implementation-notes-02-kit-storage.md`):
+
+**Error types.** `TypeError` for malformed identifiers, declarations, and
+unserializable/`undefined` values — §3.2 says `TypeError` explicitly for
+identifiers, and the same type was used for the rest for consistency. Plain
+`Error` for state conflicts: an undeclared key on `get`/`set`/`has`/`remove`,
+and a conflicting `declare()`. The dividing line: `TypeError` for "the value
+you handed me is the wrong shape," `Error` for "what you're asking is
+inconsistent with what's already true."
+
+**`corrupt` event `reason` strings** are `unparseable`, `not_an_envelope`,
+`no_migrate`. §11 names the `corrupt` event itself but not a reason enum;
+these three cover step 3's two failure modes and step 6, and were picked to
+read clearly in a debug overlay.
+
+**Event `key` is the logical key, not the full storage key.** A scoped
+store's events report `settings`, not `p1.settings` or the full
+`coinless.<gameId>.p1.settings`. Consistent with the module never learning
+what a scope *means* (§2.3) — the scope is the caller's context, not
+something kit-storage should be reconstructing for them. Revisit if a debug
+overlay ever needs to disambiguate which scope emitted an event.
+
+**`has()` reports whether bytes exist, not whether this build can read
+them.** A corrupt or newer-version (downgrade) value is still the player's
+data per §2.4, and returning `false` for it would invite a caller to
+overwrite exactly the value step 5 is designed never to touch. `has()` is
+therefore implemented directly against `readItem`, bypassing the version
+comparison entirely.
+
+**`usage()` counts the whole prefix including nested scopes.** §8 says "this
+store's prefix," which is ambiguous the same way §9's "own-level by default"
+principle doesn't quite settle — `usage()` isn't destructive the way `clear()`
+is, so there's no "profile wipe" reason to make it opt-in to depth. An
+estimate that silently excluded nested-scope bytes would be a worse estimate.
+`keys()`/`clear()` stay own-level by default per §9's explicit reasoning
+("wipe this profile completely" should require typing `deep`); `usage()` was
+never given that same reasoning in the spec, so it wasn't given the same
+default.
+
+**A migrate result that can't be serialized emits `error` and is treated as a
+failed write-back — it never turns a `get()` into a throw.** Consistent with
+§2.1: `migrate` throwing or misbehaving is arguably programmer error, but by
+the time `writeValue` is reached inside `readValue`, the caller is running
+inside a `get()`, which §2.1 and the client API doc both promise never
+throws. The failed write-back re-runs next load, same as any other
+write-back failure — `migrate` already has to be idempotent for that reason.
+
+**Phase 5 finding: §15's "Raw" checklist references an undefined
+identifier.** The last "Raw" bullet reads `raw.has() on all of
+PROFILE_LEGACY_PROBE in a blocked context returns false without throwing`.
+`PROFILE_LEGACY_PROBE` does not appear anywhere else in
+`kit-storage-spec.md`, `kit-storage-client-api.md`, or the module. The only
+similarly-named thing is `PROFILE_LEGACY = "p0"` (§3.4, §6.1) — and that's
+explicitly scoped to kit-profile, a module kit-storage is deliberately
+ignorant of (§2.3). Rather than invent a `PROFILE_LEGACY_PROBE` constant
+inside kit-storage to satisfy the letter of the checklist — which would
+violate §2.3 for the sake of one test line — the phase-5 browser test
+substituted the evident intent: `raw.has()` on the three named legacy keys
+from §3.4 (`afd_settings_v1`, `afd_achievements_v2`, `afd_profiles_v1`)
+inside a blocked-storage context, confirmed `false` on all three without
+throwing. This is flagged rather than silently resolved: it's the checklist
+wording that's inconsistent with the rest of the spec, not something this
+session had standing to rewrite. Needs the repo owner's call on the intended
+fix.
+
+**Quota test methodology, worth recording since it nearly produced a false
+pass.** Filling storage with a handful of large (1MB) chunks leaves up to
+~1MB of slack after the final chunk fails to fit. Overwriting an *existing*
+key with a same-or-smaller value costs zero additional bytes regardless of
+how full storage is, so a naive quota test that reuses the same key with a
+similarly-sized value can pass even when storage isn't actually full — the
+`set()` under test never needed the space it was supposed to be denied. Fixed
+by shrinking the fill chunk size down to 1 byte until even that fails
+(guaranteeing zero slack), and by making the value under test for the quota
+`set()` strictly larger than what's already stored at that key.

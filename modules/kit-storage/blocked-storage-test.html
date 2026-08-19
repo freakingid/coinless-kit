@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>kit-storage blocked-storage probe</title></head>
+<body>
+<p>Loaded inside a <code>sandbox="allow-scripts"</code> iframe with no
+<code>allow-same-origin</code>, so this document has an opaque origin and
+<code>window.localStorage</code> access throws — the real itch.io / Newgrounds
+failure mode (spec &sect;5.1, &sect;15 "Degradation"). Runs a handful of
+assertions and posts the result to the parent window.</p>
+<pre id="out"></pre>
+<script type="module">
+  import * as KitStorage from './kit-storage.js';
+
+  const out = { checks: [], allPassed: true };
+  function check(name, pass, detail) {
+    out.checks.push({ name, pass, detail });
+    if (!pass) out.allPassed = false;
+  }
+
+  let store;
+  let createThrew = false;
+  try {
+    store = KitStorage.create({
+      gameId: 'blocked-demo',
+      keys: { settings: { version: 1 } },
+      onEvent: (name, detail) => {
+        out.events = out.events || [];
+        out.events.push({ name, detail: String(detail && detail.error ? detail.error : '') });
+      }
+    });
+  } catch (e) {
+    createThrew = true;
+  }
+
+  check('create() does not throw', !createThrew);
+  check('available === false', store && store.available === false);
+  check("'unavailable' fired once", (out.events || []).filter(e => e.name === 'unavailable').length === 1);
+
+  let methodsThrew = null;
+  try {
+    const setOk = store.set('settings', { a: 1 });
+    check('set() returns false (not durable)', setOk === false);
+    const got = store.get('settings', 'FALLBACK');
+    check('get() returns the in-memory value after set()', JSON.stringify(got) === JSON.stringify({ a: 1 }));
+    check('has() does not throw', typeof store.has('settings') === 'boolean');
+    check('remove() does not throw', typeof store.remove('settings') === 'boolean');
+    check('keys() does not throw', Array.isArray(store.keys()));
+    check('usage() does not throw', typeof store.usage().bytes === 'number');
+    check('raw.set/get do not throw', (() => { store.raw.set('x', 'y'); return true; })());
+  } catch (e) {
+    methodsThrew = e.message;
+  }
+  check('no method threw', methodsThrew === null, methodsThrew);
+
+  // "a fresh create() in a new page load does not see it" — this document
+  // can't actually reload without losing its postMessage listener, so a
+  // second, independent create() call stands in for it: its memory shim is a
+  // fresh Map, exactly as a real reload's would be, since nothing was ever
+  // durable to begin with.
+  const store2 = KitStorage.create({ gameId: 'blocked-demo', keys: { settings: { version: 1 } } });
+  check('a fresh create() (stand-in for a new page load) does not see the shimmed value',
+    store2.get('settings', 'FALLBACK') === 'FALLBACK');
+
+  const params = new URLSearchParams(location.search);
+  if (params.get('rawProbe') === '1') {
+    const legacyKeys = ['afd_settings_v1', 'afd_achievements_v2', 'afd_profiles_v1'];
+    let rawProbeOk = true;
+    try {
+      for (const k of legacyKeys) {
+        if (store.raw.has(k) !== false) rawProbeOk = false;
+      }
+    } catch (e) {
+      rawProbeOk = false;
+    }
+    out.rawProbeOk = rawProbeOk;
+  }
+
+  document.getElementById('out').textContent = JSON.stringify(out, null, 2);
+  parent.postMessage({ source: 'kit-storage-blocked-test', result: out }, '*');
+</script>
+</body>
+</html>
