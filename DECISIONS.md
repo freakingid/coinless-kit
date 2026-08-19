@@ -424,7 +424,7 @@ can't inherit a dead profile's data, and not-clearing is what it protects. A
 "delete my data" feature, if ever wanted, is a separate confirmed action — not a
 side effect of removing a roster row.
 
-## 2026-08-18 — kit-storage phases 3–5: memory shim, quota, scopes/enumeration/raw, browser test pass, `v0.1.0` tagged
+## 2026-08-18 — kit-storage phases 3–5: memory shim, quota, scopes/enumeration/raw, browser test pass
 
 Judgment calls from phases 1–2 that the spec left unstated, deferred to be
 recorded here per the phase plan (`docs/Implementation-notes-02-kit-storage.md`):
@@ -473,6 +473,24 @@ the time `writeValue` is reached inside `readValue`, the caller is running
 inside a `get()`, which §2.1 and the client API doc both promise never
 throws. The failed write-back re-runs next load, same as any other
 write-back failure — `migrate` already has to be idempotent for that reason.
+
+**Not tagged `v0.1.0` — the phase plan's instruction collides with existing
+repo tags.** `docs/Implementation-notes-02-kit-storage.md` phase 5 and
+`kit-storage-spec.md`'s own header both say `v0.1.0`, read as a per-module
+version. But this repo's git tags are unprefixed and repo-wide, not
+per-module: `v0.1.0` (`cb51451`) and `v0.2.0` (`1d0f080`) already exist and
+both belong to kit-leaderboard's history (§ 2026-08-14/2026-08-17 entries
+above). Creating a second `v0.1.0` tag would fail outright, or — if forced —
+silently repoint the tag any game currently pinning kit-leaderboard's
+original v0.1.0 depends on, which is exactly the kind of hard-to-reverse,
+other-consumers-affected action this repo's own conventions say to stop and
+ask about rather than resolve unilaterally. Raised with the repo owner, who
+chose to leave kit-storage untagged for now rather than pick a naming scheme
+under time pressure. **kit-storage has no tag as of this entry — a game
+cannot yet pin it.** Whoever tags it next should settle the naming question
+first (module-prefixed tags going forward, e.g. `kit-storage-v0.1.0`, vs. the
+next unclaimed unprefixed version, e.g. `v0.3.0`, treated as a whole-repo
+snapshot) rather than defaulting back to a plain `v0.1.0`.
 
 **Phase 5 finding: §15's "Raw" checklist references an undefined
 identifier.** The last "Raw" bullet reads `raw.has() on all of

@@ -133,7 +133,7 @@ below and `DECISIONS.md`). A deliberate 6-submit burst against a 3/60s limit
 returned 200 six times. One stray 429 did appear earlier in ~22 rapid submits,
 so it fires sporadically rather than never — but it provides no usable cap.
 
-## kit-storage (`modules/kit-storage/`) — done, tagged `v0.1.0` 2026-08-18
+## kit-storage (`modules/kit-storage/`) — implementation and browser test pass done 2026-08-18; **not yet tagged**
 
 Built per `docs/kit-storage-spec.md`, phase plan in
 `docs/Implementation-notes-02-kit-storage.md`. Plain ES module, named export
@@ -312,12 +312,18 @@ handling) plus the `PROFILE_LEGACY_PROBE` inconsistency above.
    else). It lives in the game repo, out of scope here, but it is the
    remaining half of the drift `kit-names` was created to end — a profile
    stored as `Gh0st!` still produces a permanently-rejected submission.
-6. **kit-storage is done and tagged `v0.1.0`.** Full §15 checklist passed in a
-   real browser (80/80). One thing needs your call: §15's "Raw" block
-   references an undefined identifier, `PROFILE_LEGACY_PROBE` — see the
-   kit-storage section above and the 2026-08-18 `DECISIONS.md` entry. Doesn't
-   block anything; kit-storage's own behavior is unaffected either way, it's
-   the spec doc's checklist wording that needs a decision.
-7. kit-profile is next per the phase notes, but that's explicitly a separate
-   session — it needs to be written against this shipped `v0.1.0` API, not a
-   remembered one.
+6. **kit-storage's implementation and browser test pass are done; tagging is
+   not.** Full §15 checklist passed in a real browser (80/80). The phase notes
+   said to tag it `v0.1.0`, but that collides with this repo's existing
+   unprefixed `v0.1.0`/`v0.2.0` tags, both already claimed by kit-leaderboard
+   (§ see kit-storage section above). Flagged to you rather than guessed;
+   you chose not to tag yet, pending a naming decision — no game can pin
+   kit-storage until a tag exists.
+7. Separately, §15's "Raw" block references an undefined identifier,
+   `PROFILE_LEGACY_PROBE` — see the kit-storage section above and the
+   2026-08-18 `DECISIONS.md` entry. Doesn't block anything; kit-storage's own
+   behavior is unaffected either way, it's the spec doc's checklist wording
+   that needs a decision.
+8. kit-profile is next per the phase notes, but that's explicitly a separate
+   session — it needs to be written against kit-storage's shipped API, not a
+   remembered one, and should wait until the tag question above is settled.
