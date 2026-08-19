@@ -222,16 +222,17 @@ function readItem(ctx, storageKey) {
   }
 }
 
-// PHASE 3 owes this the memory shim and quota classification (§5.2, §8): a
-// failed write must retain the value in memory for the page session and emit
-// 'quota' or 'error'. Today it reports the failure honestly and keeps nothing.
-function writeItem(ctx, storageKey, json) {
-  if (!ctx.ls) return false;
+// Low-level write, one level below the memory shim. `error` distinguishes WHY
+// it failed: null means ctx.ls was simply absent (storage unavailable), a
+// caught exception means setItem itself threw (quota, most likely) —
+// shimmedWrite uses that distinction to decide what to emit (§5.2, §8).
+function tryWriteItem(ctx, storageKey, json) {
+  if (!ctx.ls) return { ok: false, error: null };
   try {
     ctx.ls.setItem(storageKey, json);
-    return true;
-  } catch {
-    return false;
+    return { ok: true, error: null };
+  } catch (error) {
+    return { ok: false, error };
   }
 }
 
@@ -268,24 +269,62 @@ function storageKeys(ctx) {
 // were, because §2.4 governs: a build that cannot read something is not
 // evidence that the something is worthless.
 
+// The memory shim (§5.2): a write that doesn't reach durable storage is kept
+// in ctx.memory for the rest of the page session instead. A successful write
+// clears any stale entry for the same key first, so a durable value is never
+// shadowed by an in-memory copy left over from an earlier failure. Shared by
+// writeValue (managed keys) and raw.set() — §14 step 7 says raw gets "the
+// same shim rules". `shimValue` is what get() should hand back from memory:
+// the decoded value for a managed key, the bare string for raw — never the
+// encoded bytes actually handed to tryWriteItem. `eventKey` is what events
+// name: the logical key for a managed write, the raw key for raw.
+function shimmedWrite(ctx, storageKey, encoded, shimValue, eventKey) {
+  const { ok, error } = tryWriteItem(ctx, storageKey, encoded);
+
+  if (ok) {
+    ctx.memory.delete(storageKey);
+    return true;
+  }
+
+  ctx.memory.set(storageKey, shimValue);
+
+  // error === null means ctx.ls was absent, not that setItem threw — that
+  // case already got its one-time 'unavailable' event at create(); re-firing
+  // on every write would be noise for a condition that hasn't changed. An
+  // actual setItem throw is classified 'quota' per §8: browsers report a full
+  // store inconsistently (QuotaExceededError, legacy
+  // NS_ERROR_DOM_QUOTA_REACHED, or a numeric DOM code — 22, or legacy 1014),
+  // and kit-storage cannot distinguish those from any other write failure any
+  // more reliably than the browsers can, so an unrecognized throw is treated
+  // as quota too — the response (memory shim, `false`, an event) is identical
+  // either way.
+  if (error !== null) {
+    ctx.emit('quota', { key: eventKey, bytes: (storageKey.length + encoded.length) * 2 });
+  }
+
+  return false;
+}
+
 function writeValue(ctx, prefix, key, version, value) {
-  return writeItem(ctx, prefix + key, encodeEnvelope(key, version, value));
+  const storageKey = prefix + key;
+  const json = encodeEnvelope(key, version, value);
+  return shimmedWrite(ctx, storageKey, json, value, key);
 }
 
 function readValue(ctx, prefix, key, declaration, fallback) {
   const declared = declaration.version;
+  const storageKey = prefix + key;
 
   // STEP 1 — the memory shim holds this key → return that value. Done.
-  //
-  // PHASE 3 owes the shim map itself (§5.2): any value that failed to reach
-  // durable storage is retained for the rest of the page session, and it takes
-  // precedence over whatever storage still holds. There is no map yet, so this
-  // step is inert today. It is written out rather than omitted so phase 3 fills
-  // a slot instead of re-deriving where the lookup belongs.
+  // Any value that failed to reach durable storage is retained here for the
+  // rest of the page session (§5.2), and it takes precedence over whatever
+  // storage still holds — there is no read cache, but the shim is checked
+  // before every other step, every call.
+  if (ctx.memory.has(storageKey)) return ctx.memory.get(storageKey);
 
   // STEP 2 — storage unavailable, or no stored value → fallback.
   // Not a corruption and not an error: nothing is emitted here.
-  const raw = readItem(ctx, prefix + key);
+  const raw = readItem(ctx, storageKey);
   if (raw === null) return fallback;
 
   // STEP 3 — unparseable, or parseable but not a {v, d} envelope → emit
@@ -389,6 +428,21 @@ function underPrefix(ctx, prefix) {
   return out;
 }
 
+// Same walk, over the memory shim instead of storage — a key that has never
+// reached durable storage (every set() has failed so far this session) has no
+// entry for underPrefix() to find, so clear() needs this separately to reach
+// it (§9: "clear matching entries from the memory shim").
+function underPrefixMemory(ctx, prefix) {
+  const out = [];
+  for (const storageKey of ctx.memory.keys()) {
+    if (!storageKey.startsWith(prefix)) continue;
+    const remainder = storageKey.slice(prefix.length);
+    if (remainder.length === 0) continue;
+    out.push({ storageKey, remainder });
+  }
+  return out;
+}
+
 // --- Store construction -----------------------------------------------------
 
 function createStore(ctx, prefix) {
@@ -429,9 +483,12 @@ function createStore(ctx, prefix) {
       return readItem(ctx, prefix + key) !== null;
     },
 
+    // Clears both the durable value and any memory-shimmed one (§5.2) — a
+    // failed write's in-memory copy must not outlive an explicit remove().
     remove(key) {
       requireDeclared(ctx, key, 'remove');
       const storageKey = prefix + key;
+      ctx.memory.delete(storageKey);
       if (readItem(ctx, storageKey) === null) return true;
       return removeItem(ctx, storageKey);
     },
@@ -463,13 +520,23 @@ function createStore(ctx, prefix) {
     // Own-level-only by default is deliberate: "wipe this profile completely"
     // should require typing deep (§9). Never touches coinless.lb.*, another
     // game's namespace, or unprefixed legacy keys — it only walks its own
-    // prefix. PHASE 3/4 owes it the memory-shim sweep.
+    // prefix. Also clears matching memory-shim entries (§9), including keys
+    // that never reached storage at all — a never-durable value has nothing
+    // for the storage walk to find, hence the separate underPrefixMemory pass.
+    // The returned count is durable removals only, matching "removes own-level
+    // keys" read literally; a memory-only entry was never "in" storage to
+    // remove from it.
     clear(options) {
       const deep = Boolean(options && options.deep);
       let removed = 0;
       for (const { storageKey, remainder } of underPrefix(ctx, prefix)) {
         if (!deep && remainder.includes('.')) continue;
+        ctx.memory.delete(storageKey);
         if (removeItem(ctx, storageKey)) removed += 1;
+      }
+      for (const { storageKey, remainder } of underPrefixMemory(ctx, prefix)) {
+        if (!deep && remainder.includes('.')) continue;
+        ctx.memory.delete(storageKey);
       }
       return removed;
     },
@@ -509,26 +576,35 @@ function createRaw(ctx) {
   };
 
   return {
+    // Same memory-shim precedence as the managed get() (§7.3 step 1): a raw
+    // write that failed to reach storage is served from memory until reload.
     get(key) {
-      return readItem(ctx, checkRawKey(key));
+      const k = checkRawKey(key);
+      if (ctx.memory.has(k)) return ctx.memory.get(k);
+      return readItem(ctx, k);
     },
     set(key, value) {
-      checkRawKey(key);
+      const k = checkRawKey(key);
       if (typeof value !== 'string') {
         throw new TypeError(
           `kit-storage: raw.set(${describe(key)}, ...) takes a string — ` +
           `raw values are unversioned and un-enveloped, got ${describe(value)}`
         );
       }
-      return writeItem(ctx, key, value);
+      return shimmedWrite(ctx, k, value, value, k);
     },
+    // Durable bytes only, like the managed has() (§2.4) — not whether a
+    // memory-shimmed value would answer get().
     has(key) {
       return readItem(ctx, checkRawKey(key)) !== null;
     },
+    // Clears both the durable value and any memory-shimmed one, same as the
+    // managed remove().
     remove(key) {
-      checkRawKey(key);
-      if (readItem(ctx, key) === null) return true;
-      return removeItem(ctx, key);
+      const k = checkRawKey(key);
+      ctx.memory.delete(k);
+      if (readItem(ctx, k) === null) return true;
+      return removeItem(ctx, k);
     }
   };
 }
@@ -556,6 +632,10 @@ export function create(config) {
     gameId,
     ls: null,
     declarations: new Map(),
+    // The memory shim (§5.2), keyed by full storage key so root and every
+    // scope share one map — consistent with the probe result, onEvent handler
+    // and declaration table already being shared across scope() (§6).
+    memory: new Map(),
     emit,
     raw: null
   };
