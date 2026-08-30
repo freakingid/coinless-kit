@@ -689,3 +689,115 @@ approval on each.**
    check kept as the actual point of the item. `kit-storage`'s parallel
    `PROFILE_LEGACY_PROBE` inconsistency is a separate, still-open item — this
    entry doesn't resolve that one, only kit-profile's own.
+
+# DECISIONS.md — append block, 2026-08-30
+
+Append verbatim to `DECISIONS.md`. Do not rewrite existing entries.
+
+---
+
+## 2026-08-30 — UI rendering model: canvas-rendered, not DOM overlay
+
+**Decided: every visual kit module renders to canvas, using the same renderer
+as the game. Not a DOM overlay.** This applies to `kit-scores`, `kit-options`,
+`kit-menu`, `kit-achievements`, and `kit-captions` — all of them, the same way,
+per the component plan's own argument that a split answer across modules is the
+worst outcome.
+
+**This reverses the component plan's recommendation, deliberately.** Section 1.1
+of `coinless-kit-component-plan.md` recommends DOM overlay and calls the
+accessibility argument "decisive on its own." That recommendation is superseded
+by this entry. The plan document is a proposal written to be argued with; this
+is the argument's outcome.
+
+**Reason:** pixel-perfect consistency with the game's aesthetic, and identical
+scaling with the game with no alignment problems in fullscreen or at arbitrary
+canvas sizes. For an arcade-authenticity project, DOM text sitting over canvas
+pixels reads as a different surface, and closing that gap with CSS was judged
+not worth the ongoing cost.
+
+**Consequences accepted, stated plainly so no future session treats them as
+oversights to fix:**
+
+- Each visual module must implement its own text layout, wrapping, scrolling,
+  focus model, and input handling. There is no free ride from the browser.
+  Every one of these modules is materially larger than the plan's sketch of it
+  assumed.
+- Screen readers cannot see canvas content. Accessibility is not available by
+  default and must be built deliberately if it is wanted at all.
+- The plan's tabular-figures requirement (1.2) still holds and gets harder:
+  a canvas renderer must handle digit alignment in score tables itself rather
+  than relying on a font's `tabular-nums` feature through CSS.
+
+⛔ **A future session must not "fix" a canvas-rendered kit screen by
+reimplementing it as a DOM overlay, or by adding a DOM element for text
+because canvas text layout is inconvenient.** The mixed-surface outcome — some
+kit screens DOM, some canvas — is worse than either choice made consistently,
+and it is the specific failure this entry exists to prevent. Raise it in a
+design conversation instead.
+
+### Open, not decided here: what accessibility survives
+
+The repo owner accepted the consequences above. What was **not** settled is
+whether `kit-captions` — a module whose primary purpose is accessibility —
+gets a parallel DOM layer carrying caption text for screen readers while the
+visible captions render to canvas, or whether screen-reader support is
+forfeited entirely.
+
+These are materially different modules, and the answer is a prerequisite for
+`kit-captions`' design conversation, not something that session should decide
+for itself. Flagged rather than resolved. Nothing currently depends on it —
+`kit-captions` is last in the build order.
+
+---
+
+## 2026-08-30 — First consumer of kit-storage / kit-profile is a brand-new game
+
+**Decided: the first game to integrate kit-storage, kit-names, kit-profile and
+kit-leaderboard v0.2.0 together is a brand-new game, not Orbital Overhaul, and
+not A to Z Warehouse or Repossessed.**
+
+`Implementation-notes-04-game-integration.md`'s Phase 0 already recommended a
+new game over Orbital Overhaul, and that reasoning stands unchanged: OO's
+`Profiles` object works in production with real players, its legacy import and
+pre-profile probe are the only parts of kit-profile that touch live player data
+and the only parts that cannot be fully validated against synthetic fixtures,
+and it is the only game with a live leaderboard, so a `player_id` mistake there
+does permanent damage.
+
+**New since that file was written:** Orbital Overhaul is now published, which
+strengthens the argument rather than weakening it — the risk it describes is
+live, not hypothetical.
+
+**Why not A to Z Warehouse or Repossessed**, which that file named as the
+candidates: both are in progress. Integrating into a game under active
+development means kit bugs and game bugs surface together and are hard to tell
+apart. A brand-new game starts on the kit from its first commit, which also
+answers the question OO structurally cannot — are these APIs decent to build
+against from scratch?
+
+The new game has no legacy data, so it passes `legacyRosterKey: null` and
+`legacyProbeKeys: []` and skips kit-profile §5.2's legacy import path entirely.
+
+**`Implementation-notes-04-game-integration.md` is not retired.** It remains the
+Orbital Overhaul migration, to run whenever that migration is wanted. It needs
+three corrections first, none of which are decisions — they are staleness:
+
+1. It says to vendor `kit-profile v0.1.0`. kit-profile is **0.1.1**, and that
+   bump *is* the `crypto.randomUUID` fallback for sandboxed embeds. Vendoring
+   0.1.0 as written would reintroduce a crash in exactly the itch.io /
+   Newgrounds embedding the module was hardened for.
+2. It says to vendor modules "at their tags." Per the 2026-08-19 entry, git
+   tags are no longer the versioning mechanism and kit-storage and kit-profile
+   have no tags at all. Phase 2 must reference `VERSION` values instead.
+3. Phase 1 records fixture `player_id` values "in your report," but Phase 3
+   opens a **new session** and expects them in `STATUS.md`. A fresh session
+   cannot see a prior session's report. Phase 1 must write them to `STATUS.md`.
+
+A separate `implementation-notes-05-new-game-integration.md` covers the
+new-game path, because notes-04's Phases 4 and 5 are migration work — moving an
+existing `keyFor()` router and an existing `activate()` whose reset list traces
+to `FLAG-CS031-d` — and a new game has neither. For a new game those phases are
+not reduced; they are a different job: designing a switch lifecycle correctly
+against the two-phase contract the first time, rather than migrating a proven
+one.

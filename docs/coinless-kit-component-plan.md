@@ -7,6 +7,22 @@ This document exists to be argued with. Where it proposes features, those are
 suggestions for the classic-arcade category you're building in — take the ones
 that fit the vision and discard the rest.
 
+> **Superseded in part. Read `STATUS.md` for the real inventory.**
+>
+> This document is the original proposal (2026-08). The following sections are
+> now historical and must not be designed against:
+>
+> - §1.1's DOM-overlay recommendation — reversed; see `DECISIONS.md`
+>   2026-08-30. Canvas-rendered is the decision.
+> - §1.3's `kit-storage` API sketch — superseded by the shipped module.
+> - The `kit-profile` section's `maxProfiles: 4` and single `change` event —
+>   both superseded during design (default is 8; the lifecycle is two-phase,
+>   `beforeChange` then `change`).
+> - The `kit-scores` "in progress" note and Part 3's build order — kit-names,
+>   kit-storage and kit-profile were built first. kit-scores has not started.
+>
+> Part 4's open questions 1 and 3 are answered. The rest stand.
+
 ---
 
 ## Part 1 — Cross-cutting decisions to make first
