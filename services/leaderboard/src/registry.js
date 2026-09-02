@@ -19,5 +19,25 @@ export const GAMES = {
       'saucer_kills',
       'debris_destroyed'
     ]
+  },
+  'vector-vortex': {
+    displayName:   'Vector Vortex',
+    sortDirection: 'desc',
+    metricLabel:   'Score',
+
+    maxMetricPerSecond: 1200,
+    maxMetric:          10_000_000,
+    minDurationS:       5,
+    maxDurationS:       86_400,
+
+    statsFields: [
+      'level_reached',
+      'mode',
+      'start_depth',
+      'wells_cleared',
+      'purges_spent',
+      'max_combo',
+      'deaths'
+    ]
   }
 };
