@@ -25,7 +25,7 @@ export const GAMES = {
     sortDirection: 'desc',
     metricLabel:   'Score',
 
-    maxMetricPerSecond: 1200,
+    maxMetricPerSecond: 100_000, // measured worst 86,616/s (Start Depth 81); catches absurdity only
     maxMetric:          10_000_000,
     minDurationS:       5,
     maxDurationS:       86_400,
