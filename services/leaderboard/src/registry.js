@@ -20,24 +20,19 @@ export const GAMES = {
       'debris_destroyed'
     ]
   },
-  'vector-vortex': {
-    displayName:   'Vector Vortex',
+  'vector-vortex-overdrive': {
+    displayName:   'Vector Vortex Overdrive',
     sortDirection: 'desc',
     metricLabel:   'Score',
 
-    maxMetricPerSecond: 100_000, // measured worst 86,616/s (Start Depth 81); catches absurdity only
+    maxMetricPerSecond: 150_000, // O4's measured worst 103,111/s × ~1.5
     maxMetric:          10_000_000,
     minDurationS:       5,
     maxDurationS:       86_400,
 
     statsFields: [
-      'level_reached',
-      'mode',
-      'start_depth',
-      'wells_cleared',
-      'purges_spent',
-      'max_combo',
-      'deaths'
+      'level_reached', 'mode', 'start_depth', 'wells_cleared',
+      'purges_spent', 'max_combo', 'deaths'
     ]
   }
 };
