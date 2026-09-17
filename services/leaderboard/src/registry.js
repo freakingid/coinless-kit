@@ -20,6 +20,21 @@ export const GAMES = {
       'debris_destroyed'
     ]
   },
+  'vector-vortex': {
+    displayName:   'Vector Vortex',
+    sortDirection: 'desc',
+    metricLabel:   'Score',
+
+    maxMetricPerSecond: 150_000, // F1: a strong Start Depth 81 run hit 100,078/s
+    maxMetric:          10_000_000,
+    minDurationS:       5,
+    maxDurationS:       86_400,
+
+    statsFields: [
+      'level_reached', 'mode', 'start_depth', 'wells_cleared',
+      'purges_spent', 'max_combo', 'deaths'
+    ]
+  },
   'vector-vortex-overdrive': {
     displayName:   'Vector Vortex Overdrive',
     sortDirection: 'desc',
